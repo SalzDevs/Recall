@@ -27,6 +27,32 @@ func findGitRoot(startDir string) (string, error) {
 	return filepath.Clean(gitRoot), nil
 }
 
+func ensureRecallDir(gitRoot string) (string, error) {
+	if gitRoot == "" {
+		return "", fmt.Errorf("git root is required")
+	}
+
+	recallDir := filepath.Join(gitRoot, ".recall")
+	info, err := os.Stat(recallDir)
+	if err == nil {
+		if !info.IsDir() {
+			return "", fmt.Errorf(".recall exists but is not a directory")
+		}
+
+		return recallDir, nil
+	}
+
+	if !os.IsNotExist(err) {
+		return "", fmt.Errorf("failed to inspect .recall directory: %w", err)
+	}
+
+	if err := os.Mkdir(recallDir, 0o755); err != nil {
+		return "", fmt.Errorf("failed to create .recall directory: %w", err)
+	}
+
+	return recallDir, nil
+}
+
 func main() {
 	currentDir, err := os.Getwd()
 	if err != nil {
@@ -40,5 +66,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Git root: %s\n", gitRoot)
+	recallDir, err := ensureRecallDir(gitRoot)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to initialize Recall: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Initialized Recall in %s\n", recallDir)
 }

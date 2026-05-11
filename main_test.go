@@ -45,6 +45,58 @@ func TestFindGitRootOutsideRepo(t *testing.T) {
 	}
 }
 
+func TestEnsureRecallDirCreatesDirectory(t *testing.T) {
+	repoRoot := t.TempDir()
+	recallDir := filepath.Join(repoRoot, ".recall")
+
+	got, err := ensureRecallDir(repoRoot)
+	if err != nil {
+		t.Fatalf("ensureRecallDir returned error: %v", err)
+	}
+
+	if got != recallDir {
+		t.Fatalf("ensureRecallDir() = %q, want %q", got, recallDir)
+	}
+
+	info, err := os.Stat(recallDir)
+	if err != nil {
+		t.Fatalf("failed to stat .recall directory: %v", err)
+	}
+
+	if !info.IsDir() {
+		t.Fatalf(".recall exists but is not a directory")
+	}
+}
+
+func TestEnsureRecallDirAcceptsExistingDirectory(t *testing.T) {
+	repoRoot := t.TempDir()
+	recallDir := filepath.Join(repoRoot, ".recall")
+	if err := os.Mkdir(recallDir, 0o755); err != nil {
+		t.Fatalf("failed to create .recall directory: %v", err)
+	}
+
+	got, err := ensureRecallDir(repoRoot)
+	if err != nil {
+		t.Fatalf("ensureRecallDir returned error: %v", err)
+	}
+
+	if got != recallDir {
+		t.Fatalf("ensureRecallDir() = %q, want %q", got, recallDir)
+	}
+}
+
+func TestEnsureRecallDirRejectsFile(t *testing.T) {
+	repoRoot := t.TempDir()
+	recallPath := filepath.Join(repoRoot, ".recall")
+	if err := os.WriteFile(recallPath, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("failed to create .recall file: %v", err)
+	}
+
+	if got, err := ensureRecallDir(repoRoot); err == nil {
+		t.Fatalf("ensureRecallDir() = %q, nil; want error", got)
+	}
+}
+
 func initTestRepo(t *testing.T) string {
 	t.Helper()
 
