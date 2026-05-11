@@ -446,6 +446,71 @@ func TestReadActiveSessionRejectsDirectory(t *testing.T) {
 	}
 }
 
+func TestWriteCheckpointCreatesMarkdown(t *testing.T) {
+	recallDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(recallDir, "checkpoints"), 0o755); err != nil {
+		t.Fatalf("failed to create checkpoints directory: %v", err)
+	}
+
+	status := recallStatus{
+		Session: recallSession{
+			ID:         "20260511T120000Z",
+			Goal:       "build auth flow",
+			StartedAt:  "2026-05-11T12:00:00Z",
+			Branch:     "main",
+			BaseCommit: "abc123",
+			Status:     sessionStatusActive,
+		},
+		ChangedFiles: []string{" M README.md", "?? new.txt"},
+		DiffStats:    "1 file changed, 1 insertion(+)",
+	}
+
+	checkpointPath, err := writeCheckpoint(recallDir, status, "OAuth flow implemented")
+	if err != nil {
+		t.Fatalf("writeCheckpoint returned error: %v", err)
+	}
+	if filepath.Dir(checkpointPath) != filepath.Join(recallDir, "checkpoints") {
+		t.Fatalf("checkpoint path = %q, want file in checkpoints directory", checkpointPath)
+	}
+
+	data, err := os.ReadFile(checkpointPath)
+	if err != nil {
+		t.Fatalf("failed to read checkpoint: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{
+		"# Recall Checkpoint",
+		"Message: OAuth flow implemented",
+		"Goal: build auth flow",
+		"-  M README.md",
+		"- ?? new.txt",
+		"1 file changed, 1 insertion(+)",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("checkpoint content missing %q:\n%s", want, content)
+		}
+	}
+}
+
+func TestWriteCheckpointRequiresMessage(t *testing.T) {
+	recallDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(recallDir, "checkpoints"), 0o755); err != nil {
+		t.Fatalf("failed to create checkpoints directory: %v", err)
+	}
+
+	if checkpointPath, err := writeCheckpoint(recallDir, recallStatus{}, "   "); err == nil {
+		t.Fatalf("writeCheckpoint() = %q, nil; want error", checkpointPath)
+	}
+}
+
+func TestWriteCheckpointRejectsMissingCheckpointDir(t *testing.T) {
+	recallDir := t.TempDir()
+
+	if checkpointPath, err := writeCheckpoint(recallDir, recallStatus{}, "message"); err == nil {
+		t.Fatalf("writeCheckpoint() = %q, nil; want error", checkpointPath)
+	}
+}
+
 func TestWriteDefaultConfigCreatesConfig(t *testing.T) {
 	recallDir := t.TempDir()
 	configPath := filepath.Join(recallDir, configFileName)
@@ -669,6 +734,58 @@ func TestRunStatusReturnsNoActiveSession(t *testing.T) {
 
 	if session, err := runStatus(); !errors.Is(err, errNoActiveSession) {
 		t.Fatalf("runStatus() = %+v, %v; want errNoActiveSession", session, err)
+	}
+}
+
+func TestRunCheckpointCreatesCheckpoint(t *testing.T) {
+	repoRoot := initTestRepo(t)
+	commitTestFile(t, repoRoot)
+	restoreWorkingDir := chdir(t, repoRoot)
+	defer restoreWorkingDir()
+
+	if _, _, err := runInit(); err != nil {
+		t.Fatalf("runInit returned error: %v", err)
+	}
+	if _, _, err := runStart("build auth flow"); err != nil {
+		t.Fatalf("runStart returned error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "README.md"), []byte("# Changed\n"), 0o644); err != nil {
+		t.Fatalf("failed to modify tracked file: %v", err)
+	}
+
+	checkpointPath, err := runCheckpoint("OAuth flow implemented")
+	if err != nil {
+		t.Fatalf("runCheckpoint returned error: %v", err)
+	}
+	if filepath.Dir(checkpointPath) != filepath.Join(repoRoot, ".recall", "checkpoints") {
+		t.Fatalf("checkpoint path = %q, want file in checkpoints directory", checkpointPath)
+	}
+
+	data, err := os.ReadFile(checkpointPath)
+	if err != nil {
+		t.Fatalf("failed to read checkpoint: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "Message: OAuth flow implemented") {
+		t.Fatalf("checkpoint content missing message:\n%s", content)
+	}
+	if !strings.Contains(content, "-  M README.md") {
+		t.Fatalf("checkpoint content missing changed file:\n%s", content)
+	}
+}
+
+func TestRunCheckpointReturnsNoActiveSession(t *testing.T) {
+	repoRoot := initTestRepo(t)
+	commitTestFile(t, repoRoot)
+	restoreWorkingDir := chdir(t, repoRoot)
+	defer restoreWorkingDir()
+
+	if _, _, err := runInit(); err != nil {
+		t.Fatalf("runInit returned error: %v", err)
+	}
+
+	if checkpointPath, err := runCheckpoint("message"); !errors.Is(err, errNoActiveSession) {
+		t.Fatalf("runCheckpoint() = %q, %v; want errNoActiveSession", checkpointPath, err)
 	}
 }
 

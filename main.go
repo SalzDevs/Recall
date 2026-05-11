@@ -16,6 +16,7 @@ const (
 	configFileName        = "config.json"
 	activeSessionFileName = "active.json"
 	sessionStatusActive   = "active"
+	checkpointTimeFormat  = "20060102T150405.000000000"
 )
 
 var (
@@ -330,6 +331,72 @@ func readActiveSession(recallDir string) (recallSession, error) {
 	return session, nil
 }
 
+func writeCheckpoint(recallDir string, status recallStatus, message string) (string, error) {
+	if recallDir == "" {
+		return "", fmt.Errorf("recall directory is required")
+	}
+
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return "", fmt.Errorf("checkpoint message is required")
+	}
+
+	checkpointsDir := filepath.Join(recallDir, "checkpoints")
+	info, err := os.Stat(checkpointsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("checkpoints directory not found")
+		}
+		return "", fmt.Errorf("failed to inspect checkpoints directory: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("checkpoints path exists but is not a directory")
+	}
+
+	now := time.Now().UTC()
+	createdAt := now.Format(time.RFC3339)
+	fileName := now.Format(checkpointTimeFormat) + "Z.md"
+	checkpointPath := filepath.Join(checkpointsDir, fileName)
+
+	var builder strings.Builder
+	builder.WriteString("# Recall Checkpoint\n\n")
+	builder.WriteString(fmt.Sprintf("Message: %s\n", message))
+	builder.WriteString(fmt.Sprintf("Created: %s\n\n", createdAt))
+	builder.WriteString("## Session\n\n")
+	builder.WriteString(fmt.Sprintf("Goal: %s\n", status.Session.Goal))
+	builder.WriteString(fmt.Sprintf("Started: %s\n", status.Session.StartedAt))
+	builder.WriteString(fmt.Sprintf("Branch: %s\n", status.Session.Branch))
+	builder.WriteString(fmt.Sprintf("Base commit: %s\n\n", status.Session.BaseCommit))
+	builder.WriteString("## Changed files\n\n")
+	if len(status.ChangedFiles) == 0 {
+		builder.WriteString("none\n\n")
+	} else {
+		for _, file := range status.ChangedFiles {
+			builder.WriteString(fmt.Sprintf("- %s\n", file))
+		}
+		builder.WriteString("\n")
+	}
+	builder.WriteString("## Diff\n\n")
+	if status.DiffStats == "" {
+		builder.WriteString("no tracked changes\n")
+	} else {
+		builder.WriteString(status.DiffStats)
+		builder.WriteString("\n")
+	}
+
+	file, err := os.OpenFile(checkpointPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return "", fmt.Errorf("failed to create checkpoint: %w", err)
+	}
+	defer file.Close()
+
+	if _, err := file.WriteString(builder.String()); err != nil {
+		return "", fmt.Errorf("failed to write checkpoint: %w", err)
+	}
+
+	return checkpointPath, nil
+}
+
 func writeDefaultConfig(recallDir, projectName string) (string, error) {
 	if recallDir == "" {
 		return "", fmt.Errorf("recall directory is required")
@@ -474,11 +541,47 @@ func runStatus() (recallStatus, error) {
 	return recallStatus{Session: session, ChangedFiles: changedFiles, DiffStats: diffStats}, nil
 }
 
+func runCheckpoint(message string) (string, error) {
+	currentDir, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	gitRoot, err := findGitRoot(currentDir)
+	if err != nil {
+		return "", fmt.Errorf("Recall requires a Git repository. Run `git init` first")
+	}
+
+	recallDir, err := getRecallDir(gitRoot)
+	if err != nil {
+		return "", err
+	}
+
+	session, err := readActiveSession(recallDir)
+	if err != nil {
+		return "", err
+	}
+
+	changedFiles, err := getChangedFiles(gitRoot)
+	if err != nil {
+		return "", err
+	}
+
+	diffStats, err := getDiffStats(gitRoot, session.BaseCommit)
+	if err != nil {
+		return "", err
+	}
+
+	status := recallStatus{Session: session, ChangedFiles: changedFiles, DiffStats: diffStats}
+	return writeCheckpoint(recallDir, status, message)
+}
+
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  recall init")
 	fmt.Fprintln(w, "  recall start <goal>")
 	fmt.Fprintln(w, "  recall status")
+	fmt.Fprintln(w, "  recall checkpoint <message>")
 }
 
 func main() {
@@ -565,6 +668,26 @@ func main() {
 		} else {
 			fmt.Printf("  %s\n", status.DiffStats)
 		}
+	case "checkpoint":
+		if len(args) < 2 {
+			fmt.Fprintf(os.Stderr, "checkpoint requires a message\n\n")
+			printUsage(os.Stderr)
+			os.Exit(1)
+		}
+
+		message := strings.Join(args[1:], " ")
+		checkpointPath, err := runCheckpoint(message)
+		if err != nil {
+			if errors.Is(err, errNoActiveSession) {
+				fmt.Fprintf(os.Stderr, "no active Recall session. Start one with `recall start \"describe your goal\"`\n")
+				os.Exit(1)
+			}
+
+			fmt.Fprintf(os.Stderr, "failed to create checkpoint: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Created checkpoint: %s\n", checkpointPath)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", args[0])
 		printUsage(os.Stderr)
