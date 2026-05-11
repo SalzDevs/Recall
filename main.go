@@ -12,6 +12,8 @@ import (
 
 const configFileName = "config.json"
 
+var recallSubdirs = []string{"sessions", "checkpoints", "handoffs"}
+
 type recallConfig struct {
 	SchemaVersion int    `json:"schemaVersion"`
 	ProjectName   string `json:"projectName"`
@@ -61,6 +63,34 @@ func ensureRecallDir(gitRoot string) (string, error) {
 	}
 
 	return recallDir, nil
+}
+
+func ensureRecallSubdirs(recallDir string) error {
+	if recallDir == "" {
+		return fmt.Errorf("recall directory is required")
+	}
+
+	for _, subdir := range recallSubdirs {
+		path := filepath.Join(recallDir, subdir)
+		info, err := os.Stat(path)
+		if err == nil {
+			if !info.IsDir() {
+				return fmt.Errorf("%s exists but is not a directory", path)
+			}
+
+			continue
+		}
+
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("failed to inspect %s: %w", path, err)
+		}
+
+		if err := os.Mkdir(path, 0o755); err != nil {
+			return fmt.Errorf("failed to create %s: %w", path, err)
+		}
+	}
+
+	return nil
 }
 
 func writeDefaultConfig(recallDir, projectName string) (string, error) {
@@ -125,6 +155,11 @@ func main() {
 
 	recallDir, err := ensureRecallDir(gitRoot)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to initialize Recall: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := ensureRecallSubdirs(recallDir); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to initialize Recall: %v\n", err)
 		os.Exit(1)
 	}

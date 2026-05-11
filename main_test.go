@@ -99,6 +99,50 @@ func TestEnsureRecallDirRejectsFile(t *testing.T) {
 	}
 }
 
+func TestEnsureRecallSubdirsCreatesDirectories(t *testing.T) {
+	recallDir := t.TempDir()
+
+	if err := ensureRecallSubdirs(recallDir); err != nil {
+		t.Fatalf("ensureRecallSubdirs returned error: %v", err)
+	}
+
+	for _, subdir := range recallSubdirs {
+		path := filepath.Join(recallDir, subdir)
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("failed to stat %s: %v", path, err)
+		}
+		if !info.IsDir() {
+			t.Fatalf("%s exists but is not a directory", path)
+		}
+	}
+}
+
+func TestEnsureRecallSubdirsAcceptsExistingDirectories(t *testing.T) {
+	recallDir := t.TempDir()
+	for _, subdir := range recallSubdirs {
+		if err := os.Mkdir(filepath.Join(recallDir, subdir), 0o755); err != nil {
+			t.Fatalf("failed to create existing %s directory: %v", subdir, err)
+		}
+	}
+
+	if err := ensureRecallSubdirs(recallDir); err != nil {
+		t.Fatalf("ensureRecallSubdirs returned error: %v", err)
+	}
+}
+
+func TestEnsureRecallSubdirsRejectsFile(t *testing.T) {
+	recallDir := t.TempDir()
+	path := filepath.Join(recallDir, recallSubdirs[0])
+	if err := os.WriteFile(path, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("failed to create subdir file: %v", err)
+	}
+
+	if err := ensureRecallSubdirs(recallDir); err == nil {
+		t.Fatalf("ensureRecallSubdirs returned nil; want error")
+	}
+}
+
 func TestWriteDefaultConfigCreatesConfig(t *testing.T) {
 	recallDir := t.TempDir()
 	configPath := filepath.Join(recallDir, configFileName)
