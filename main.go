@@ -43,6 +43,11 @@ type recallSession struct {
 	Status     string `json:"status"`
 }
 
+type recallStatus struct {
+	Session      recallSession
+	ChangedFiles []string
+}
+
 func findGitRoot(startDir string) (string, error) {
 	if startDir == "" {
 		return "", fmt.Errorf("start directory is required")
@@ -89,6 +94,34 @@ func getGitState(gitRoot string) (gitState, error) {
 	}
 
 	return state, nil
+}
+
+func getChangedFiles(gitRoot string) ([]string, error) {
+	if gitRoot == "" {
+		return nil, fmt.Errorf("git root is required")
+	}
+
+	output, err := exec.Command("git", "-C", gitRoot, "status", "--short").Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read changed files")
+	}
+
+	text := strings.TrimRight(string(output), "\r\n")
+	if text == "" {
+		return []string{}, nil
+	}
+
+	lines := strings.Split(text, "\n")
+	changedFiles := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+		changedFiles = append(changedFiles, line)
+	}
+
+	return changedFiles, nil
 }
 
 func ensureRecallDir(gitRoot string) (string, error) {
@@ -390,23 +423,33 @@ func runStart(goal string) (recallSession, string, error) {
 	return session, activePath, nil
 }
 
-func runStatus() (recallSession, error) {
+func runStatus() (recallStatus, error) {
 	currentDir, err := os.Getwd()
 	if err != nil {
-		return recallSession{}, fmt.Errorf("failed to get current directory: %w", err)
+		return recallStatus{}, fmt.Errorf("failed to get current directory: %w", err)
 	}
 
 	gitRoot, err := findGitRoot(currentDir)
 	if err != nil {
-		return recallSession{}, fmt.Errorf("Recall requires a Git repository. Run `git init` first")
+		return recallStatus{}, fmt.Errorf("Recall requires a Git repository. Run `git init` first")
 	}
 
 	recallDir, err := getRecallDir(gitRoot)
 	if err != nil {
-		return recallSession{}, err
+		return recallStatus{}, err
 	}
 
-	return readActiveSession(recallDir)
+	session, err := readActiveSession(recallDir)
+	if err != nil {
+		return recallStatus{}, err
+	}
+
+	changedFiles, err := getChangedFiles(gitRoot)
+	if err != nil {
+		return recallStatus{}, err
+	}
+
+	return recallStatus{Session: session, ChangedFiles: changedFiles}, nil
 }
 
 func printUsage(w io.Writer) {
@@ -466,7 +509,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		session, err := runStatus()
+		status, err := runStatus()
 		if err != nil {
 			if errors.Is(err, errNoActiveSession) {
 				fmt.Println("No active Recall session.")
@@ -480,10 +523,19 @@ func main() {
 			os.Exit(1)
 		}
 
-		fmt.Printf("Active Recall session: %s\n", session.Goal)
-		fmt.Printf("Started: %s\n", session.StartedAt)
-		fmt.Printf("Branch: %s\n", session.Branch)
-		fmt.Printf("Base commit: %s\n", session.BaseCommit)
+		fmt.Printf("Active Recall session: %s\n", status.Session.Goal)
+		fmt.Printf("Started: %s\n", status.Session.StartedAt)
+		fmt.Printf("Branch: %s\n", status.Session.Branch)
+		fmt.Printf("Base commit: %s\n", status.Session.BaseCommit)
+		fmt.Println()
+		fmt.Println("Changed files:")
+		if len(status.ChangedFiles) == 0 {
+			fmt.Println("  none")
+		} else {
+			for _, file := range status.ChangedFiles {
+				fmt.Printf("  %s\n", file)
+			}
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", args[0])
 		printUsage(os.Stderr)

@@ -75,6 +75,43 @@ func TestGetGitStateRequiresCommit(t *testing.T) {
 	}
 }
 
+func TestGetChangedFilesReturnsShortStatusLines(t *testing.T) {
+	repoRoot := initTestRepo(t)
+	commitTestFile(t, repoRoot)
+
+	if err := os.WriteFile(filepath.Join(repoRoot, "README.md"), []byte("# Changed\n"), 0o644); err != nil {
+		t.Fatalf("failed to modify tracked file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "new.txt"), []byte("new file\n"), 0o644); err != nil {
+		t.Fatalf("failed to write untracked file: %v", err)
+	}
+
+	changedFiles, err := getChangedFiles(repoRoot)
+	if err != nil {
+		t.Fatalf("getChangedFiles returned error: %v", err)
+	}
+
+	if !containsLine(changedFiles, " M README.md") {
+		t.Fatalf("changed files = %v, want modified README.md", changedFiles)
+	}
+	if !containsLine(changedFiles, "?? new.txt") {
+		t.Fatalf("changed files = %v, want untracked new.txt", changedFiles)
+	}
+}
+
+func TestGetChangedFilesReturnsEmptySliceForCleanRepo(t *testing.T) {
+	repoRoot := initTestRepo(t)
+	commitTestFile(t, repoRoot)
+
+	changedFiles, err := getChangedFiles(repoRoot)
+	if err != nil {
+		t.Fatalf("getChangedFiles returned error: %v", err)
+	}
+	if len(changedFiles) != 0 {
+		t.Fatalf("changed files = %v, want empty slice", changedFiles)
+	}
+}
+
 func TestEnsureRecallDirCreatesDirectory(t *testing.T) {
 	repoRoot := t.TempDir()
 	recallDir := filepath.Join(repoRoot, ".recall")
@@ -557,8 +594,33 @@ func TestRunStatusReturnsActiveSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runStatus returned error: %v", err)
 	}
-	if got != want {
-		t.Fatalf("runStatus() = %+v, want %+v", got, want)
+	if got.Session != want {
+		t.Fatalf("session = %+v, want %+v", got.Session, want)
+	}
+}
+
+func TestRunStatusIncludesChangedFiles(t *testing.T) {
+	repoRoot := initTestRepo(t)
+	commitTestFile(t, repoRoot)
+	restoreWorkingDir := chdir(t, repoRoot)
+	defer restoreWorkingDir()
+
+	if _, _, err := runInit(); err != nil {
+		t.Fatalf("runInit returned error: %v", err)
+	}
+	if _, _, err := runStart("build auth flow"); err != nil {
+		t.Fatalf("runStart returned error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "README.md"), []byte("# Changed\n"), 0o644); err != nil {
+		t.Fatalf("failed to modify tracked file: %v", err)
+	}
+
+	got, err := runStatus()
+	if err != nil {
+		t.Fatalf("runStatus returned error: %v", err)
+	}
+	if !containsLine(got.ChangedFiles, " M README.md") {
+		t.Fatalf("changed files = %v, want modified README.md", got.ChangedFiles)
 	}
 }
 
@@ -654,4 +716,13 @@ func gitOutput(t *testing.T, repoRoot string, args ...string) string {
 	}
 
 	return strings.TrimSpace(string(output))
+}
+
+func containsLine(lines []string, want string) bool {
+	for _, line := range lines {
+		if line == want {
+			return true
+		}
+	}
+	return false
 }
