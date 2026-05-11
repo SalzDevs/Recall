@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,7 +18,10 @@ const (
 	sessionStatusActive   = "active"
 )
 
-var recallSubdirs = []string{"sessions", "checkpoints", "handoffs"}
+var (
+	errNoActiveSession = errors.New("no active Recall session")
+	recallSubdirs      = []string{"sessions", "checkpoints", "handoffs"}
+)
 
 type recallConfig struct {
 	SchemaVersion int    `json:"schemaVersion"`
@@ -246,6 +250,36 @@ func writeActiveSession(recallDir string, session recallSession) (string, error)
 	return activePath, nil
 }
 
+func readActiveSession(recallDir string) (recallSession, error) {
+	if recallDir == "" {
+		return recallSession{}, fmt.Errorf("recall directory is required")
+	}
+
+	activePath := filepath.Join(recallDir, "sessions", activeSessionFileName)
+	info, err := os.Stat(activePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return recallSession{}, errNoActiveSession
+		}
+		return recallSession{}, fmt.Errorf("failed to inspect active session: %w", err)
+	}
+	if info.IsDir() {
+		return recallSession{}, fmt.Errorf("active session path exists but is a directory")
+	}
+
+	data, err := os.ReadFile(activePath)
+	if err != nil {
+		return recallSession{}, fmt.Errorf("failed to read active session: %w", err)
+	}
+
+	var session recallSession
+	if err := json.Unmarshal(data, &session); err != nil {
+		return recallSession{}, fmt.Errorf("failed to decode active session: %w", err)
+	}
+
+	return session, nil
+}
+
 func writeDefaultConfig(recallDir, projectName string) (string, error) {
 	if recallDir == "" {
 		return "", fmt.Errorf("recall directory is required")
@@ -356,10 +390,30 @@ func runStart(goal string) (recallSession, string, error) {
 	return session, activePath, nil
 }
 
+func runStatus() (recallSession, error) {
+	currentDir, err := os.Getwd()
+	if err != nil {
+		return recallSession{}, fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	gitRoot, err := findGitRoot(currentDir)
+	if err != nil {
+		return recallSession{}, fmt.Errorf("Recall requires a Git repository. Run `git init` first")
+	}
+
+	recallDir, err := getRecallDir(gitRoot)
+	if err != nil {
+		return recallSession{}, err
+	}
+
+	return readActiveSession(recallDir)
+}
+
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  recall init")
 	fmt.Fprintln(w, "  recall start <goal>")
+	fmt.Fprintln(w, "  recall status")
 }
 
 func main() {
@@ -405,6 +459,31 @@ func main() {
 		fmt.Printf("Branch: %s\n", session.Branch)
 		fmt.Printf("Base commit: %s\n", session.BaseCommit)
 		fmt.Printf("Session: %s\n", activePath)
+	case "status":
+		if len(args) > 1 {
+			fmt.Fprintf(os.Stderr, "status does not accept arguments\n\n")
+			printUsage(os.Stderr)
+			os.Exit(1)
+		}
+
+		session, err := runStatus()
+		if err != nil {
+			if errors.Is(err, errNoActiveSession) {
+				fmt.Println("No active Recall session.")
+				fmt.Println()
+				fmt.Println("Start one with:")
+				fmt.Println("  recall start \"describe your goal\"")
+				return
+			}
+
+			fmt.Fprintf(os.Stderr, "failed to read Recall status: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Active Recall session: %s\n", session.Goal)
+		fmt.Printf("Started: %s\n", session.StartedAt)
+		fmt.Printf("Branch: %s\n", session.Branch)
+		fmt.Printf("Base commit: %s\n", session.BaseCommit)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", args[0])
 		printUsage(os.Stderr)
