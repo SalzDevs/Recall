@@ -126,6 +126,36 @@ func TestEnsureRecallDirRejectsFile(t *testing.T) {
 	}
 }
 
+func TestGetRecallDirReturnsInitializedRecallDir(t *testing.T) {
+	repoRoot := t.TempDir()
+	recallDir, err := ensureRecallDir(repoRoot)
+	if err != nil {
+		t.Fatalf("ensureRecallDir returned error: %v", err)
+	}
+	if err := ensureRecallSubdirs(recallDir); err != nil {
+		t.Fatalf("ensureRecallSubdirs returned error: %v", err)
+	}
+	if _, err := writeDefaultConfig(recallDir, "TestProject"); err != nil {
+		t.Fatalf("writeDefaultConfig returned error: %v", err)
+	}
+
+	got, err := getRecallDir(repoRoot)
+	if err != nil {
+		t.Fatalf("getRecallDir returned error: %v", err)
+	}
+	if got != recallDir {
+		t.Fatalf("getRecallDir() = %q, want %q", got, recallDir)
+	}
+}
+
+func TestGetRecallDirRejectsUninitializedRepo(t *testing.T) {
+	repoRoot := t.TempDir()
+
+	if got, err := getRecallDir(repoRoot); err == nil {
+		t.Fatalf("getRecallDir() = %q, nil; want error", got)
+	}
+}
+
 func TestEnsureRecallSubdirsCreatesDirectories(t *testing.T) {
 	recallDir := t.TempDir()
 
@@ -361,19 +391,8 @@ func TestRunInitInitializesRecallInGitRoot(t *testing.T) {
 		t.Fatalf("failed to create subdirectory: %v", err)
 	}
 
-	originalDir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("failed to get current directory: %v", err)
-	}
-	defer func() {
-		if err := os.Chdir(originalDir); err != nil {
-			t.Fatalf("failed to restore current directory: %v", err)
-		}
-	}()
-
-	if err := os.Chdir(subdir); err != nil {
-		t.Fatalf("failed to change directory: %v", err)
-	}
+	restoreWorkingDir := chdir(t, subdir)
+	defer restoreWorkingDir()
 
 	recallDir, configPath, err := runInit()
 	if err != nil {
@@ -395,12 +414,89 @@ func TestRunInitInitializesRecallInGitRoot(t *testing.T) {
 	}
 }
 
+func TestRunStartCreatesActiveSession(t *testing.T) {
+	repoRoot := initTestRepo(t)
+	baseCommit := commitTestFile(t, repoRoot)
+	restoreWorkingDir := chdir(t, repoRoot)
+	defer restoreWorkingDir()
+
+	if _, _, err := runInit(); err != nil {
+		t.Fatalf("runInit returned error: %v", err)
+	}
+
+	session, activePath, err := runStart("build auth flow")
+	if err != nil {
+		t.Fatalf("runStart returned error: %v", err)
+	}
+
+	if session.Goal != "build auth flow" {
+		t.Fatalf("goal = %q, want %q", session.Goal, "build auth flow")
+	}
+	if session.BaseCommit != baseCommit {
+		t.Fatalf("baseCommit = %q, want %q", session.BaseCommit, baseCommit)
+	}
+
+	wantActivePath := filepath.Join(repoRoot, ".recall", "sessions", activeSessionFileName)
+	if activePath != wantActivePath {
+		t.Fatalf("activePath = %q, want %q", activePath, wantActivePath)
+	}
+	if _, err := os.Stat(wantActivePath); err != nil {
+		t.Fatalf("expected active session to exist: %v", err)
+	}
+}
+
+func TestRunStartRejectsUninitializedRepo(t *testing.T) {
+	repoRoot := initTestRepo(t)
+	commitTestFile(t, repoRoot)
+	restoreWorkingDir := chdir(t, repoRoot)
+	defer restoreWorkingDir()
+
+	if session, activePath, err := runStart("build auth flow"); err == nil {
+		t.Fatalf("runStart() = %+v, %q, nil; want error", session, activePath)
+	}
+}
+
+func TestRunStartRejectsExistingActiveSession(t *testing.T) {
+	repoRoot := initTestRepo(t)
+	commitTestFile(t, repoRoot)
+	restoreWorkingDir := chdir(t, repoRoot)
+	defer restoreWorkingDir()
+
+	if _, _, err := runInit(); err != nil {
+		t.Fatalf("runInit returned error: %v", err)
+	}
+	if _, _, err := runStart("build auth flow"); err != nil {
+		t.Fatalf("first runStart returned error: %v", err)
+	}
+	if session, activePath, err := runStart("another goal"); err == nil {
+		t.Fatalf("second runStart() = %+v, %q, nil; want error", session, activePath)
+	}
+}
+
 func recallSubdirsPaths(recallDir string) []string {
 	paths := make([]string, 0, len(recallSubdirs))
 	for _, subdir := range recallSubdirs {
 		paths = append(paths, filepath.Join(recallDir, subdir))
 	}
 	return paths
+}
+
+func chdir(t *testing.T, dir string) func() {
+	t.Helper()
+
+	originalDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get current directory: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("failed to change directory: %v", err)
+	}
+
+	return func() {
+		if err := os.Chdir(originalDir); err != nil {
+			t.Fatalf("failed to restore current directory: %v", err)
+		}
+	}
 }
 
 func initTestRepo(t *testing.T) string {

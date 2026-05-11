@@ -113,6 +113,50 @@ func ensureRecallDir(gitRoot string) (string, error) {
 	return recallDir, nil
 }
 
+func getRecallDir(gitRoot string) (string, error) {
+	if gitRoot == "" {
+		return "", fmt.Errorf("git root is required")
+	}
+
+	recallDir := filepath.Join(gitRoot, ".recall")
+	info, err := os.Stat(recallDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("Recall is not initialized. Run `recall init` first")
+		}
+		return "", fmt.Errorf("failed to inspect .recall directory: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf(".recall exists but is not a directory")
+	}
+
+	configPath := filepath.Join(recallDir, configFileName)
+	info, err = os.Stat(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("Recall is not initialized. Run `recall init` first")
+		}
+		return "", fmt.Errorf("failed to inspect config.json: %w", err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("config.json exists but is a directory")
+	}
+
+	sessionsDir := filepath.Join(recallDir, "sessions")
+	info, err = os.Stat(sessionsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("Recall is not initialized. Run `recall init` first")
+		}
+		return "", fmt.Errorf("failed to inspect sessions directory: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("sessions path exists but is not a directory")
+	}
+
+	return recallDir, nil
+}
+
 func ensureRecallSubdirs(recallDir string) error {
 	if recallDir == "" {
 		return fmt.Errorf("recall directory is required")
@@ -278,9 +322,44 @@ func runInit() (string, string, error) {
 	return recallDir, configPath, nil
 }
 
+func runStart(goal string) (recallSession, string, error) {
+	currentDir, err := os.Getwd()
+	if err != nil {
+		return recallSession{}, "", fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	gitRoot, err := findGitRoot(currentDir)
+	if err != nil {
+		return recallSession{}, "", fmt.Errorf("Recall requires a Git repository. Run `git init` first")
+	}
+
+	recallDir, err := getRecallDir(gitRoot)
+	if err != nil {
+		return recallSession{}, "", err
+	}
+
+	state, err := getGitState(gitRoot)
+	if err != nil {
+		return recallSession{}, "", err
+	}
+
+	session, err := newActiveSession(goal, state)
+	if err != nil {
+		return recallSession{}, "", err
+	}
+
+	activePath, err := writeActiveSession(recallDir, session)
+	if err != nil {
+		return recallSession{}, "", err
+	}
+
+	return session, activePath, nil
+}
+
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  recall init")
+	fmt.Fprintln(w, "  recall start <goal>")
 }
 
 func main() {
@@ -308,6 +387,24 @@ func main() {
 
 		fmt.Printf("Initialized Recall in %s\n", recallDir)
 		fmt.Printf("Config: %s\n", configPath)
+	case "start":
+		if len(args) < 2 {
+			fmt.Fprintf(os.Stderr, "start requires a goal\n\n")
+			printUsage(os.Stderr)
+			os.Exit(1)
+		}
+
+		goal := strings.Join(args[1:], " ")
+		session, activePath, err := runStart(goal)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to start Recall session: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Started Recall session: %s\n", session.Goal)
+		fmt.Printf("Branch: %s\n", session.Branch)
+		fmt.Printf("Base commit: %s\n", session.BaseCommit)
+		fmt.Printf("Session: %s\n", activePath)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", args[0])
 		printUsage(os.Stderr)
