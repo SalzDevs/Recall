@@ -1,12 +1,22 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+const configFileName = "config.json"
+
+type recallConfig struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	ProjectName   string `json:"projectName"`
+	CreatedAt     string `json:"createdAt"`
+}
 
 func findGitRoot(startDir string) (string, error) {
 	if startDir == "" {
@@ -53,6 +63,53 @@ func ensureRecallDir(gitRoot string) (string, error) {
 	return recallDir, nil
 }
 
+func writeDefaultConfig(recallDir, projectName string) (string, error) {
+	if recallDir == "" {
+		return "", fmt.Errorf("recall directory is required")
+	}
+	if projectName == "" {
+		return "", fmt.Errorf("project name is required")
+	}
+
+	configPath := filepath.Join(recallDir, configFileName)
+	info, err := os.Stat(configPath)
+	if err == nil {
+		if info.IsDir() {
+			return "", fmt.Errorf("config.json exists but is a directory")
+		}
+
+		return configPath, nil
+	}
+
+	if !os.IsNotExist(err) {
+		return "", fmt.Errorf("failed to inspect config.json: %w", err)
+	}
+
+	config := recallConfig{
+		SchemaVersion: 1,
+		ProjectName:   projectName,
+		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+	}
+
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("failed to encode config.json: %w", err)
+	}
+	data = append(data, '\n')
+
+	file, err := os.OpenFile(configPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return "", fmt.Errorf("failed to create config.json: %w", err)
+	}
+	defer file.Close()
+
+	if _, err := file.Write(data); err != nil {
+		return "", fmt.Errorf("failed to write config.json: %w", err)
+	}
+
+	return configPath, nil
+}
+
 func main() {
 	currentDir, err := os.Getwd()
 	if err != nil {
@@ -72,5 +129,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	projectName := filepath.Base(gitRoot)
+	configPath, err := writeDefaultConfig(recallDir, projectName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to initialize Recall: %v\n", err)
+		os.Exit(1)
+	}
+
 	fmt.Printf("Initialized Recall in %s\n", recallDir)
+	fmt.Printf("Config: %s\n", configPath)
 }

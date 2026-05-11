@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestFindGitRootFromRepoRoot(t *testing.T) {
@@ -94,6 +96,77 @@ func TestEnsureRecallDirRejectsFile(t *testing.T) {
 
 	if got, err := ensureRecallDir(repoRoot); err == nil {
 		t.Fatalf("ensureRecallDir() = %q, nil; want error", got)
+	}
+}
+
+func TestWriteDefaultConfigCreatesConfig(t *testing.T) {
+	recallDir := t.TempDir()
+	configPath := filepath.Join(recallDir, configFileName)
+
+	got, err := writeDefaultConfig(recallDir, "TestProject")
+	if err != nil {
+		t.Fatalf("writeDefaultConfig returned error: %v", err)
+	}
+
+	if got != configPath {
+		t.Fatalf("writeDefaultConfig() = %q, want %q", got, configPath)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read config.json: %v", err)
+	}
+
+	var config recallConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		t.Fatalf("failed to decode config.json: %v", err)
+	}
+
+	if config.SchemaVersion != 1 {
+		t.Fatalf("schemaVersion = %d, want 1", config.SchemaVersion)
+	}
+	if config.ProjectName != "TestProject" {
+		t.Fatalf("projectName = %q, want %q", config.ProjectName, "TestProject")
+	}
+	if _, err := time.Parse(time.RFC3339, config.CreatedAt); err != nil {
+		t.Fatalf("createdAt = %q, want RFC3339 timestamp: %v", config.CreatedAt, err)
+	}
+}
+
+func TestWriteDefaultConfigDoesNotOverwriteExistingConfig(t *testing.T) {
+	recallDir := t.TempDir()
+	configPath := filepath.Join(recallDir, configFileName)
+	original := []byte("existing config")
+	if err := os.WriteFile(configPath, original, 0o644); err != nil {
+		t.Fatalf("failed to create existing config.json: %v", err)
+	}
+
+	got, err := writeDefaultConfig(recallDir, "TestProject")
+	if err != nil {
+		t.Fatalf("writeDefaultConfig returned error: %v", err)
+	}
+	if got != configPath {
+		t.Fatalf("writeDefaultConfig() = %q, want %q", got, configPath)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read config.json: %v", err)
+	}
+	if string(data) != string(original) {
+		t.Fatalf("config.json was overwritten: got %q, want %q", string(data), string(original))
+	}
+}
+
+func TestWriteDefaultConfigRejectsDirectory(t *testing.T) {
+	recallDir := t.TempDir()
+	configPath := filepath.Join(recallDir, configFileName)
+	if err := os.Mkdir(configPath, 0o755); err != nil {
+		t.Fatalf("failed to create config.json directory: %v", err)
+	}
+
+	if got, err := writeDefaultConfig(recallDir, "TestProject"); err == nil {
+		t.Fatalf("writeDefaultConfig() = %q, nil; want error", got)
 	}
 }
 
