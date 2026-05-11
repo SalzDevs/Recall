@@ -11,7 +11,11 @@ import (
 	"time"
 )
 
-const configFileName = "config.json"
+const (
+	configFileName        = "config.json"
+	activeSessionFileName = "active.json"
+	sessionStatusActive   = "active"
+)
 
 var recallSubdirs = []string{"sessions", "checkpoints", "handoffs"}
 
@@ -24,6 +28,15 @@ type recallConfig struct {
 type gitState struct {
 	Branch string
 	Commit string
+}
+
+type recallSession struct {
+	ID         string `json:"id"`
+	Goal       string `json:"goal"`
+	StartedAt  string `json:"startedAt"`
+	Branch     string `json:"branch"`
+	BaseCommit string `json:"baseCommit"`
+	Status     string `json:"status"`
 }
 
 func findGitRoot(startDir string) (string, error) {
@@ -126,6 +139,67 @@ func ensureRecallSubdirs(recallDir string) error {
 	}
 
 	return nil
+}
+
+func newActiveSession(goal string, state gitState) (recallSession, error) {
+	goal = strings.TrimSpace(goal)
+	if goal == "" {
+		return recallSession{}, fmt.Errorf("session goal is required")
+	}
+	if state.Branch == "" {
+		return recallSession{}, fmt.Errorf("git branch is required")
+	}
+	if state.Commit == "" {
+		return recallSession{}, fmt.Errorf("git commit is required")
+	}
+
+	now := time.Now().UTC()
+	return recallSession{
+		ID:         now.Format("20060102T150405Z"),
+		Goal:       goal,
+		StartedAt:  now.Format(time.RFC3339),
+		Branch:     state.Branch,
+		BaseCommit: state.Commit,
+		Status:     sessionStatusActive,
+	}, nil
+}
+
+func writeActiveSession(recallDir string, session recallSession) (string, error) {
+	if recallDir == "" {
+		return "", fmt.Errorf("recall directory is required")
+	}
+
+	activePath := filepath.Join(recallDir, "sessions", activeSessionFileName)
+	info, err := os.Stat(activePath)
+	if err == nil {
+		if info.IsDir() {
+			return "", fmt.Errorf("active session path exists but is a directory")
+		}
+
+		return "", fmt.Errorf("active session already exists")
+	}
+
+	if !os.IsNotExist(err) {
+		return "", fmt.Errorf("failed to inspect active session: %w", err)
+	}
+
+	data, err := json.MarshalIndent(session, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("failed to encode active session: %w", err)
+	}
+	data = append(data, '\n')
+
+	file, err := os.OpenFile(activePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return "", fmt.Errorf("failed to create active session: %w", err)
+	}
+	defer file.Close()
+
+	if _, err := file.Write(data); err != nil {
+		return "", fmt.Errorf("failed to write active session: %w", err)
+	}
+
+	return activePath, nil
 }
 
 func writeDefaultConfig(recallDir, projectName string) (string, error) {

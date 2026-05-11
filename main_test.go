@@ -170,6 +170,119 @@ func TestEnsureRecallSubdirsRejectsFile(t *testing.T) {
 	}
 }
 
+func TestNewActiveSessionUsesGoalAndGitState(t *testing.T) {
+	state := gitState{Branch: "main", Commit: "abc123"}
+
+	session, err := newActiveSession("  build auth flow  ", state)
+	if err != nil {
+		t.Fatalf("newActiveSession returned error: %v", err)
+	}
+
+	if session.ID == "" {
+		t.Fatalf("session ID is empty")
+	}
+	if session.Goal != "build auth flow" {
+		t.Fatalf("goal = %q, want %q", session.Goal, "build auth flow")
+	}
+	if session.Branch != state.Branch {
+		t.Fatalf("branch = %q, want %q", session.Branch, state.Branch)
+	}
+	if session.BaseCommit != state.Commit {
+		t.Fatalf("baseCommit = %q, want %q", session.BaseCommit, state.Commit)
+	}
+	if session.Status != sessionStatusActive {
+		t.Fatalf("status = %q, want %q", session.Status, sessionStatusActive)
+	}
+	if _, err := time.Parse(time.RFC3339, session.StartedAt); err != nil {
+		t.Fatalf("startedAt = %q, want RFC3339 timestamp: %v", session.StartedAt, err)
+	}
+}
+
+func TestNewActiveSessionRequiresGoal(t *testing.T) {
+	state := gitState{Branch: "main", Commit: "abc123"}
+
+	if session, err := newActiveSession("   ", state); err == nil {
+		t.Fatalf("newActiveSession() = %+v, nil; want error", session)
+	}
+}
+
+func TestWriteActiveSessionCreatesFile(t *testing.T) {
+	recallDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(recallDir, "sessions"), 0o755); err != nil {
+		t.Fatalf("failed to create sessions directory: %v", err)
+	}
+
+	session := recallSession{
+		ID:         "20260511T120000Z",
+		Goal:       "build auth flow",
+		StartedAt:  "2026-05-11T12:00:00Z",
+		Branch:     "main",
+		BaseCommit: "abc123",
+		Status:     sessionStatusActive,
+	}
+
+	got, err := writeActiveSession(recallDir, session)
+	if err != nil {
+		t.Fatalf("writeActiveSession returned error: %v", err)
+	}
+
+	wantPath := filepath.Join(recallDir, "sessions", activeSessionFileName)
+	if got != wantPath {
+		t.Fatalf("writeActiveSession() = %q, want %q", got, wantPath)
+	}
+
+	data, err := os.ReadFile(wantPath)
+	if err != nil {
+		t.Fatalf("failed to read active session: %v", err)
+	}
+
+	var gotSession recallSession
+	if err := json.Unmarshal(data, &gotSession); err != nil {
+		t.Fatalf("failed to decode active session: %v", err)
+	}
+	if gotSession != session {
+		t.Fatalf("active session = %+v, want %+v", gotSession, session)
+	}
+}
+
+func TestWriteActiveSessionRejectsExistingFile(t *testing.T) {
+	recallDir := t.TempDir()
+	sessionsDir := filepath.Join(recallDir, "sessions")
+	if err := os.Mkdir(sessionsDir, 0o755); err != nil {
+		t.Fatalf("failed to create sessions directory: %v", err)
+	}
+
+	activePath := filepath.Join(sessionsDir, activeSessionFileName)
+	original := []byte("existing session")
+	if err := os.WriteFile(activePath, original, 0o644); err != nil {
+		t.Fatalf("failed to create existing active session: %v", err)
+	}
+
+	if got, err := writeActiveSession(recallDir, recallSession{}); err == nil {
+		t.Fatalf("writeActiveSession() = %q, nil; want error", got)
+	}
+
+	data, err := os.ReadFile(activePath)
+	if err != nil {
+		t.Fatalf("failed to read active session: %v", err)
+	}
+	if string(data) != string(original) {
+		t.Fatalf("active session was overwritten: got %q, want %q", string(data), string(original))
+	}
+}
+
+func TestWriteActiveSessionRejectsDirectory(t *testing.T) {
+	recallDir := t.TempDir()
+	activePath := filepath.Join(recallDir, "sessions", activeSessionFileName)
+	if err := os.MkdirAll(activePath, 0o755); err != nil {
+		t.Fatalf("failed to create active session directory: %v", err)
+	}
+
+	if got, err := writeActiveSession(recallDir, recallSession{}); err == nil {
+		t.Fatalf("writeActiveSession() = %q, nil; want error", got)
+	}
+}
+
 func TestWriteDefaultConfigCreatesConfig(t *testing.T) {
 	recallDir := t.TempDir()
 	configPath := filepath.Join(recallDir, configFileName)
