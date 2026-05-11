@@ -21,6 +21,11 @@ type recallConfig struct {
 	CreatedAt     string `json:"createdAt"`
 }
 
+type gitState struct {
+	Branch string
+	Commit string
+}
+
 func findGitRoot(startDir string) (string, error) {
 	if startDir == "" {
 		return "", fmt.Errorf("start directory is required")
@@ -38,6 +43,35 @@ func findGitRoot(startDir string) (string, error) {
 	}
 
 	return filepath.Clean(gitRoot), nil
+}
+
+func getGitState(gitRoot string) (gitState, error) {
+	if gitRoot == "" {
+		return gitState{}, fmt.Errorf("git root is required")
+	}
+
+	branchOutput, err := exec.Command("git", "-C", gitRoot, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return gitState{}, fmt.Errorf("failed to read current git branch")
+	}
+
+	commitOutput, err := exec.Command("git", "-C", gitRoot, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return gitState{}, fmt.Errorf("failed to read current git commit")
+	}
+
+	state := gitState{
+		Branch: strings.TrimSpace(string(branchOutput)),
+		Commit: strings.TrimSpace(string(commitOutput)),
+	}
+	if state.Branch == "" {
+		return gitState{}, fmt.Errorf("current git branch not found")
+	}
+	if state.Commit == "" {
+		return gitState{}, fmt.Errorf("current git commit not found")
+	}
+
+	return state, nil
 }
 
 func ensureRecallDir(gitRoot string) (string, error) {

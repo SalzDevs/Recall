@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -44,6 +45,32 @@ func TestFindGitRootOutsideRepo(t *testing.T) {
 
 	if got, err := findGitRoot(nonRepoDir); err == nil {
 		t.Fatalf("findGitRoot() = %q, nil; want error", got)
+	}
+}
+
+func TestGetGitStateReturnsBranchAndCommit(t *testing.T) {
+	repoRoot := initTestRepo(t)
+	wantCommit := commitTestFile(t, repoRoot)
+	wantBranch := gitOutput(t, repoRoot, "rev-parse", "--abbrev-ref", "HEAD")
+
+	got, err := getGitState(repoRoot)
+	if err != nil {
+		t.Fatalf("getGitState returned error: %v", err)
+	}
+
+	if got.Branch != wantBranch {
+		t.Fatalf("branch = %q, want %q", got.Branch, wantBranch)
+	}
+	if got.Commit != wantCommit {
+		t.Fatalf("commit = %q, want %q", got.Commit, wantCommit)
+	}
+}
+
+func TestGetGitStateRequiresCommit(t *testing.T) {
+	repoRoot := initTestRepo(t)
+
+	if got, err := getGitState(repoRoot); err == nil {
+		t.Fatalf("getGitState() = %+v, nil; want error", got)
 	}
 }
 
@@ -279,4 +306,39 @@ func initTestRepo(t *testing.T) string {
 	}
 
 	return filepath.Clean(cleanRoot)
+}
+
+func commitTestFile(t *testing.T, repoRoot string) string {
+	t.Helper()
+
+	filePath := filepath.Join(repoRoot, "README.md")
+	if err := os.WriteFile(filePath, []byte("# Test Repo\n"), 0o644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	runGit(t, repoRoot, "add", "README.md")
+	runGit(t, repoRoot, "-c", "user.name=Recall Test", "-c", "user.email=recall@example.com", "commit", "-m", "initial commit")
+
+	return gitOutput(t, repoRoot, "rev-parse", "HEAD")
+}
+
+func runGit(t *testing.T, repoRoot string, args ...string) {
+	t.Helper()
+
+	cmd := exec.Command("git", append([]string{"-C", repoRoot}, args...)...)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, string(output))
+	}
+}
+
+func gitOutput(t *testing.T, repoRoot string, args ...string) string {
+	t.Helper()
+
+	cmd := exec.Command("git", append([]string{"-C", repoRoot}, args...)...)
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %v failed: %v", args, err)
+	}
+
+	return strings.TrimSpace(string(output))
 }
