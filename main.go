@@ -50,9 +50,11 @@ type recallSession struct {
 }
 
 type recallStatus struct {
-	Session      recallSession
-	ChangedFiles []string
-	DiffStats    string
+	Session         recallSession
+	CurrentGitState gitState
+	BranchChanged   bool
+	ChangedFiles    []string
+	DiffStats       string
 }
 
 type recallReview struct {
@@ -498,6 +500,10 @@ func writeCheckpoint(recallDir string, status recallStatus, message string) (str
 	builder.WriteString(fmt.Sprintf("Goal: %s\n", status.Session.Goal))
 	builder.WriteString(fmt.Sprintf("Started: %s\n", status.Session.StartedAt))
 	builder.WriteString(fmt.Sprintf("Branch: %s\n", status.Session.Branch))
+	if status.CurrentGitState.Branch != "" {
+		builder.WriteString(fmt.Sprintf("Current branch: %s\n", status.CurrentGitState.Branch))
+		builder.WriteString(fmt.Sprintf("Branch changed: %t\n", status.BranchChanged))
+	}
 	builder.WriteString(fmt.Sprintf("Base commit: %s\n\n", status.Session.BaseCommit))
 	builder.WriteString("## Changed files\n\n")
 	if len(status.ChangedFiles) == 0 {
@@ -554,7 +560,7 @@ func contextRiskLevel(status recallStatus) string {
 	switch {
 	case changedFileCount >= 10 || lineChangeCount >= 500:
 		return "high"
-	case changedFileCount >= 5 || lineChangeCount >= 100:
+	case status.BranchChanged || changedFileCount >= 5 || lineChangeCount >= 100:
 		return "medium"
 	default:
 		return "low"
@@ -571,6 +577,11 @@ func buildReview(status recallStatus) recallReview {
 	}
 
 	riskLevel := contextRiskLevel(status)
+	if status.BranchChanged {
+		checklist = append([]string{
+			fmt.Sprintf("Confirm the branch change from %s to %s was intentional.", status.Session.Branch, status.CurrentGitState.Branch),
+		}, checklist...)
+	}
 	if riskLevel == "high" {
 		checklist = append([]string{
 			"Pause before making more agent-driven changes; context-loss risk is high.",
@@ -602,6 +613,10 @@ func writeHandoff(recallDir string, status recallStatus) (string, error) {
 	builder.WriteString(fmt.Sprintf("Status: %s\n\n", status.Session.Status))
 	builder.WriteString("## Git context\n\n")
 	builder.WriteString(fmt.Sprintf("Branch: %s\n", status.Session.Branch))
+	if status.CurrentGitState.Branch != "" {
+		builder.WriteString(fmt.Sprintf("Current branch: %s\n", status.CurrentGitState.Branch))
+		builder.WriteString(fmt.Sprintf("Branch changed: %t\n", status.BranchChanged))
+	}
 	builder.WriteString(fmt.Sprintf("Base commit: %s\n\n", status.Session.BaseCommit))
 	builder.WriteString("## Changed files\n\n")
 	if len(status.ChangedFiles) == 0 {
@@ -751,37 +766,8 @@ func runStart(goal string) (recallSession, string, error) {
 }
 
 func runStatus() (recallStatus, error) {
-	currentDir, err := os.Getwd()
-	if err != nil {
-		return recallStatus{}, fmt.Errorf("failed to get current directory: %w", err)
-	}
-
-	gitRoot, err := findGitRoot(currentDir)
-	if err != nil {
-		return recallStatus{}, fmt.Errorf("Recall requires a Git repository. Run `git init` first")
-	}
-
-	recallDir, err := getRecallDir(gitRoot)
-	if err != nil {
-		return recallStatus{}, err
-	}
-
-	session, err := readActiveSession(recallDir)
-	if err != nil {
-		return recallStatus{}, err
-	}
-
-	changedFiles, err := getChangedFiles(gitRoot)
-	if err != nil {
-		return recallStatus{}, err
-	}
-
-	diffStats, err := getDiffStats(gitRoot, session.BaseCommit)
-	if err != nil {
-		return recallStatus{}, err
-	}
-
-	return recallStatus{Session: session, ChangedFiles: changedFiles, DiffStats: diffStats}, nil
+	_, status, err := currentRecallContext()
+	return status, err
 }
 
 func currentRecallContext() (string, recallStatus, error) {
@@ -805,6 +791,11 @@ func currentRecallContext() (string, recallStatus, error) {
 		return "", recallStatus{}, err
 	}
 
+	currentGitState, err := getGitState(gitRoot)
+	if err != nil {
+		return "", recallStatus{}, err
+	}
+
 	changedFiles, err := getChangedFiles(gitRoot)
 	if err != nil {
 		return "", recallStatus{}, err
@@ -815,7 +806,13 @@ func currentRecallContext() (string, recallStatus, error) {
 		return "", recallStatus{}, err
 	}
 
-	return recallDir, recallStatus{Session: session, ChangedFiles: changedFiles, DiffStats: diffStats}, nil
+	return recallDir, recallStatus{
+		Session:         session,
+		CurrentGitState: currentGitState,
+		BranchChanged:   currentGitState.Branch != session.Branch,
+		ChangedFiles:    changedFiles,
+		DiffStats:       diffStats,
+	}, nil
 }
 
 func runCheckpoint(message string) (string, error) {
@@ -942,6 +939,10 @@ func main() {
 		fmt.Printf("Active Recall session: %s\n", status.Session.Goal)
 		fmt.Printf("Started: %s\n", status.Session.StartedAt)
 		fmt.Printf("Branch: %s\n", status.Session.Branch)
+		fmt.Printf("Current branch: %s\n", status.CurrentGitState.Branch)
+		if status.BranchChanged {
+			fmt.Println("Branch changed: yes")
+		}
 		fmt.Printf("Base commit: %s\n", status.Session.BaseCommit)
 		fmt.Println()
 		fmt.Println("Changed files:")

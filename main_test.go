@@ -740,6 +740,22 @@ func TestBuildReviewReturnsHighRiskChecklist(t *testing.T) {
 	}
 }
 
+func TestBuildReviewFlagsBranchChange(t *testing.T) {
+	status := recallStatus{
+		Session:         recallSession{Goal: "build auth flow", Branch: "main"},
+		CurrentGitState: gitState{Branch: "feature/auth"},
+		BranchChanged:   true,
+	}
+
+	review := buildReview(status)
+	if review.RiskLevel != "medium" {
+		t.Fatalf("risk level = %q, want medium", review.RiskLevel)
+	}
+	if !strings.Contains(review.Checklist[0], "branch change from main to feature/auth") {
+		t.Fatalf("first checklist item = %q, want branch-change warning", review.Checklist[0])
+	}
+}
+
 func TestWriteDefaultConfigCreatesConfig(t *testing.T) {
 	recallDir := t.TempDir()
 	configPath := filepath.Join(recallDir, configFileName)
@@ -956,6 +972,36 @@ func TestRunStatusIncludesChangedFilesAndDiffStats(t *testing.T) {
 	}
 	if !strings.Contains(got.DiffStats, "1 file changed") {
 		t.Fatalf("diff stats = %q, want file change count", got.DiffStats)
+	}
+}
+
+func TestRunStatusDetectsBranchChange(t *testing.T) {
+	repoRoot := initTestRepo(t)
+	commitTestFile(t, repoRoot)
+	restoreWorkingDir := chdir(t, repoRoot)
+	defer restoreWorkingDir()
+
+	if _, _, err := runInit(); err != nil {
+		t.Fatalf("runInit returned error: %v", err)
+	}
+	activeSession, _, err := runStart("build auth flow")
+	if err != nil {
+		t.Fatalf("runStart returned error: %v", err)
+	}
+	runGit(t, repoRoot, "checkout", "-b", "feature/auth")
+
+	got, err := runStatus()
+	if err != nil {
+		t.Fatalf("runStatus returned error: %v", err)
+	}
+	if !got.BranchChanged {
+		t.Fatalf("BranchChanged = false, want true")
+	}
+	if got.Session.Branch != activeSession.Branch {
+		t.Fatalf("session branch = %q, want %q", got.Session.Branch, activeSession.Branch)
+	}
+	if got.CurrentGitState.Branch != "feature/auth" {
+		t.Fatalf("current branch = %q, want feature/auth", got.CurrentGitState.Branch)
 	}
 }
 
