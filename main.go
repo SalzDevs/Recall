@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -140,37 +141,68 @@ func writeDefaultConfig(recallDir, projectName string) (string, error) {
 	return configPath, nil
 }
 
-func main() {
+func runInit() (string, string, error) {
 	currentDir, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to get current directory: %v\n", err)
-		os.Exit(1)
+		return "", "", fmt.Errorf("failed to get current directory: %w", err)
 	}
 
 	gitRoot, err := findGitRoot(currentDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Recall requires a Git repository. Run `git init` first.\n")
-		os.Exit(1)
+		return "", "", fmt.Errorf("Recall requires a Git repository. Run `git init` first")
 	}
 
 	recallDir, err := ensureRecallDir(gitRoot)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to initialize Recall: %v\n", err)
-		os.Exit(1)
+		return "", "", err
 	}
 
 	if err := ensureRecallSubdirs(recallDir); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to initialize Recall: %v\n", err)
-		os.Exit(1)
+		return "", "", err
 	}
 
 	projectName := filepath.Base(gitRoot)
 	configPath, err := writeDefaultConfig(recallDir, projectName)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to initialize Recall: %v\n", err)
-		os.Exit(1)
+		return "", "", err
 	}
 
-	fmt.Printf("Initialized Recall in %s\n", recallDir)
-	fmt.Printf("Config: %s\n", configPath)
+	return recallDir, configPath, nil
+}
+
+func printUsage(w io.Writer) {
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  recall init")
+}
+
+func main() {
+	args := os.Args[1:]
+	if len(args) == 0 {
+		printUsage(os.Stdout)
+		return
+	}
+
+	switch args[0] {
+	case "help", "-h", "--help":
+		printUsage(os.Stdout)
+	case "init":
+		if len(args) > 1 {
+			fmt.Fprintf(os.Stderr, "init does not accept arguments\n\n")
+			printUsage(os.Stderr)
+			os.Exit(1)
+		}
+
+		recallDir, configPath, err := runInit()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to initialize Recall: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Initialized Recall in %s\n", recallDir)
+		fmt.Printf("Config: %s\n", configPath)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", args[0])
+		printUsage(os.Stderr)
+		os.Exit(1)
+	}
 }

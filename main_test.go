@@ -214,6 +214,55 @@ func TestWriteDefaultConfigRejectsDirectory(t *testing.T) {
 	}
 }
 
+func TestRunInitInitializesRecallInGitRoot(t *testing.T) {
+	repoRoot := initTestRepo(t)
+	subdir := filepath.Join(repoRoot, "internal", "auth")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatalf("failed to create subdirectory: %v", err)
+	}
+
+	originalDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get current directory: %v", err)
+	}
+	defer func() {
+		if err := os.Chdir(originalDir); err != nil {
+			t.Fatalf("failed to restore current directory: %v", err)
+		}
+	}()
+
+	if err := os.Chdir(subdir); err != nil {
+		t.Fatalf("failed to change directory: %v", err)
+	}
+
+	recallDir, configPath, err := runInit()
+	if err != nil {
+		t.Fatalf("runInit returned error: %v", err)
+	}
+
+	wantRecallDir := filepath.Join(repoRoot, ".recall")
+	if recallDir != wantRecallDir {
+		t.Fatalf("recallDir = %q, want %q", recallDir, wantRecallDir)
+	}
+	if configPath != filepath.Join(wantRecallDir, configFileName) {
+		t.Fatalf("configPath = %q, want %q", configPath, filepath.Join(wantRecallDir, configFileName))
+	}
+
+	for _, path := range append([]string{configPath}, recallSubdirsPaths(wantRecallDir)...) {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected %s to exist: %v", path, err)
+		}
+	}
+}
+
+func recallSubdirsPaths(recallDir string) []string {
+	paths := make([]string, 0, len(recallSubdirs))
+	for _, subdir := range recallSubdirs {
+		paths = append(paths, filepath.Join(recallDir, subdir))
+	}
+	return paths
+}
+
 func initTestRepo(t *testing.T) string {
 	t.Helper()
 
