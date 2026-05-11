@@ -16,6 +16,7 @@ const (
 	configFileName        = "config.json"
 	activeSessionFileName = "active.json"
 	sessionStatusActive   = "active"
+	sessionStatusStopped  = "stopped"
 	checkpointTimeFormat  = "20060102T150405.000000000"
 )
 
@@ -39,6 +40,7 @@ type recallSession struct {
 	ID         string `json:"id"`
 	Goal       string `json:"goal"`
 	StartedAt  string `json:"startedAt"`
+	EndedAt    string `json:"endedAt,omitempty"`
 	Branch     string `json:"branch"`
 	BaseCommit string `json:"baseCommit"`
 	Status     string `json:"status"`
@@ -329,6 +331,52 @@ func readActiveSession(recallDir string) (recallSession, error) {
 	}
 
 	return session, nil
+}
+
+func stopActiveSession(recallDir string) (recallSession, string, error) {
+	if recallDir == "" {
+		return recallSession{}, "", fmt.Errorf("recall directory is required")
+	}
+
+	sessionsDir, err := ensureSubdir(recallDir, "sessions")
+	if err != nil {
+		return recallSession{}, "", err
+	}
+
+	session, err := readActiveSession(recallDir)
+	if err != nil {
+		return recallSession{}, "", err
+	}
+	if session.ID == "" {
+		return recallSession{}, "", fmt.Errorf("active session ID is required")
+	}
+
+	session.Status = sessionStatusStopped
+	session.EndedAt = time.Now().UTC().Format(time.RFC3339)
+
+	archivePath := filepath.Join(sessionsDir, session.ID+".json")
+	data, err := json.MarshalIndent(session, "", "  ")
+	if err != nil {
+		return recallSession{}, "", fmt.Errorf("failed to encode stopped session: %w", err)
+	}
+	data = append(data, '\n')
+
+	file, err := os.OpenFile(archivePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return recallSession{}, "", fmt.Errorf("failed to archive stopped session: %w", err)
+	}
+	defer file.Close()
+
+	if _, err := file.Write(data); err != nil {
+		return recallSession{}, "", fmt.Errorf("failed to write stopped session archive: %w", err)
+	}
+
+	activePath := filepath.Join(sessionsDir, activeSessionFileName)
+	if err := os.Remove(activePath); err != nil {
+		return recallSession{}, "", fmt.Errorf("failed to remove active session: %w", err)
+	}
+
+	return session, archivePath, nil
 }
 
 func ensureSubdir(recallDir, name string) (string, error) {
@@ -665,6 +713,25 @@ func runHandoff() (string, error) {
 	return writeHandoff(recallDir, status)
 }
 
+func runStop() (recallSession, string, error) {
+	currentDir, err := os.Getwd()
+	if err != nil {
+		return recallSession{}, "", fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	gitRoot, err := findGitRoot(currentDir)
+	if err != nil {
+		return recallSession{}, "", fmt.Errorf("Recall requires a Git repository. Run `git init` first")
+	}
+
+	recallDir, err := getRecallDir(gitRoot)
+	if err != nil {
+		return recallSession{}, "", err
+	}
+
+	return stopActiveSession(recallDir)
+}
+
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  recall init")
@@ -672,6 +739,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  recall status")
 	fmt.Fprintln(w, "  recall checkpoint <message>")
 	fmt.Fprintln(w, "  recall handoff")
+	fmt.Fprintln(w, "  recall stop")
 }
 
 func main() {
@@ -797,6 +865,26 @@ func main() {
 		}
 
 		fmt.Printf("Created handoff: %s\n", handoffPath)
+	case "stop":
+		if len(args) > 1 {
+			fmt.Fprintf(os.Stderr, "stop does not accept arguments\n\n")
+			printUsage(os.Stderr)
+			os.Exit(1)
+		}
+
+		session, archivePath, err := runStop()
+		if err != nil {
+			if errors.Is(err, errNoActiveSession) {
+				fmt.Fprintf(os.Stderr, "no active Recall session to stop\n")
+				os.Exit(1)
+			}
+
+			fmt.Fprintf(os.Stderr, "failed to stop Recall session: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Stopped Recall session: %s\n", session.Goal)
+		fmt.Printf("Archived: %s\n", archivePath)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", args[0])
 		printUsage(os.Stderr)

@@ -446,6 +446,70 @@ func TestReadActiveSessionRejectsDirectory(t *testing.T) {
 	}
 }
 
+func TestStopActiveSessionArchivesAndRemovesActiveSession(t *testing.T) {
+	recallDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(recallDir, "sessions"), 0o755); err != nil {
+		t.Fatalf("failed to create sessions directory: %v", err)
+	}
+
+	activeSession := recallSession{
+		ID:         "20260511T120000Z",
+		Goal:       "build auth flow",
+		StartedAt:  "2026-05-11T12:00:00Z",
+		Branch:     "main",
+		BaseCommit: "abc123",
+		Status:     sessionStatusActive,
+	}
+	if _, err := writeActiveSession(recallDir, activeSession); err != nil {
+		t.Fatalf("writeActiveSession returned error: %v", err)
+	}
+
+	stoppedSession, archivePath, err := stopActiveSession(recallDir)
+	if err != nil {
+		t.Fatalf("stopActiveSession returned error: %v", err)
+	}
+
+	if stoppedSession.Status != sessionStatusStopped {
+		t.Fatalf("status = %q, want %q", stoppedSession.Status, sessionStatusStopped)
+	}
+	if stoppedSession.EndedAt == "" {
+		t.Fatalf("endedAt is empty")
+	}
+	if _, err := time.Parse(time.RFC3339, stoppedSession.EndedAt); err != nil {
+		t.Fatalf("endedAt = %q, want RFC3339 timestamp: %v", stoppedSession.EndedAt, err)
+	}
+
+	if archivePath != filepath.Join(recallDir, "sessions", activeSession.ID+".json") {
+		t.Fatalf("archivePath = %q, want session archive path", archivePath)
+	}
+	if _, err := os.Stat(filepath.Join(recallDir, "sessions", activeSessionFileName)); !os.IsNotExist(err) {
+		t.Fatalf("active session still exists or stat failed unexpectedly: %v", err)
+	}
+
+	data, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatalf("failed to read archived session: %v", err)
+	}
+	var archivedSession recallSession
+	if err := json.Unmarshal(data, &archivedSession); err != nil {
+		t.Fatalf("failed to decode archived session: %v", err)
+	}
+	if archivedSession != stoppedSession {
+		t.Fatalf("archived session = %+v, want %+v", archivedSession, stoppedSession)
+	}
+}
+
+func TestStopActiveSessionReturnsNoActiveSession(t *testing.T) {
+	recallDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(recallDir, "sessions"), 0o755); err != nil {
+		t.Fatalf("failed to create sessions directory: %v", err)
+	}
+
+	if session, archivePath, err := stopActiveSession(recallDir); !errors.Is(err, errNoActiveSession) {
+		t.Fatalf("stopActiveSession() = %+v, %q, %v; want errNoActiveSession", session, archivePath, err)
+	}
+}
+
 func TestWriteCheckpointCreatesMarkdown(t *testing.T) {
 	recallDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(recallDir, "checkpoints"), 0o755); err != nil {
@@ -892,6 +956,54 @@ func TestRunHandoffReturnsNoActiveSession(t *testing.T) {
 
 	if handoffPath, err := runHandoff(); !errors.Is(err, errNoActiveSession) {
 		t.Fatalf("runHandoff() = %q, %v; want errNoActiveSession", handoffPath, err)
+	}
+}
+
+func TestRunStopArchivesActiveSession(t *testing.T) {
+	repoRoot := initTestRepo(t)
+	commitTestFile(t, repoRoot)
+	restoreWorkingDir := chdir(t, repoRoot)
+	defer restoreWorkingDir()
+
+	if _, _, err := runInit(); err != nil {
+		t.Fatalf("runInit returned error: %v", err)
+	}
+	activeSession, _, err := runStart("build auth flow")
+	if err != nil {
+		t.Fatalf("runStart returned error: %v", err)
+	}
+
+	stoppedSession, archivePath, err := runStop()
+	if err != nil {
+		t.Fatalf("runStop returned error: %v", err)
+	}
+	if stoppedSession.ID != activeSession.ID {
+		t.Fatalf("stopped session ID = %q, want %q", stoppedSession.ID, activeSession.ID)
+	}
+	if stoppedSession.Status != sessionStatusStopped {
+		t.Fatalf("status = %q, want %q", stoppedSession.Status, sessionStatusStopped)
+	}
+	if archivePath != filepath.Join(repoRoot, ".recall", "sessions", activeSession.ID+".json") {
+		t.Fatalf("archivePath = %q, want stopped session archive", archivePath)
+	}
+
+	if _, err := runStatus(); !errors.Is(err, errNoActiveSession) {
+		t.Fatalf("runStatus after stop returned %v; want errNoActiveSession", err)
+	}
+}
+
+func TestRunStopReturnsNoActiveSession(t *testing.T) {
+	repoRoot := initTestRepo(t)
+	commitTestFile(t, repoRoot)
+	restoreWorkingDir := chdir(t, repoRoot)
+	defer restoreWorkingDir()
+
+	if _, _, err := runInit(); err != nil {
+		t.Fatalf("runInit returned error: %v", err)
+	}
+
+	if session, archivePath, err := runStop(); !errors.Is(err, errNoActiveSession) {
+		t.Fatalf("runStop() = %+v, %q, %v; want errNoActiveSession", session, archivePath, err)
 	}
 }
 
