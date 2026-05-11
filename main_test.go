@@ -112,6 +112,36 @@ func TestGetChangedFilesReturnsEmptySliceForCleanRepo(t *testing.T) {
 	}
 }
 
+func TestGetDiffStatsReturnsShortStatSinceBaseCommit(t *testing.T) {
+	repoRoot := initTestRepo(t)
+	baseCommit := commitTestFile(t, repoRoot)
+
+	if err := os.WriteFile(filepath.Join(repoRoot, "README.md"), []byte("# Changed\n"), 0o644); err != nil {
+		t.Fatalf("failed to modify tracked file: %v", err)
+	}
+
+	diffStats, err := getDiffStats(repoRoot, baseCommit)
+	if err != nil {
+		t.Fatalf("getDiffStats returned error: %v", err)
+	}
+	if !strings.Contains(diffStats, "1 file changed") {
+		t.Fatalf("diff stats = %q, want file change count", diffStats)
+	}
+}
+
+func TestGetDiffStatsReturnsEmptyStringForNoTrackedChanges(t *testing.T) {
+	repoRoot := initTestRepo(t)
+	baseCommit := commitTestFile(t, repoRoot)
+
+	diffStats, err := getDiffStats(repoRoot, baseCommit)
+	if err != nil {
+		t.Fatalf("getDiffStats returned error: %v", err)
+	}
+	if diffStats != "" {
+		t.Fatalf("diff stats = %q, want empty string", diffStats)
+	}
+}
+
 func TestEnsureRecallDirCreatesDirectory(t *testing.T) {
 	repoRoot := t.TempDir()
 	recallDir := filepath.Join(repoRoot, ".recall")
@@ -599,7 +629,7 @@ func TestRunStatusReturnsActiveSession(t *testing.T) {
 	}
 }
 
-func TestRunStatusIncludesChangedFiles(t *testing.T) {
+func TestRunStatusIncludesChangedFilesAndDiffStats(t *testing.T) {
 	repoRoot := initTestRepo(t)
 	commitTestFile(t, repoRoot)
 	restoreWorkingDir := chdir(t, repoRoot)
@@ -621,6 +651,9 @@ func TestRunStatusIncludesChangedFiles(t *testing.T) {
 	}
 	if !containsLine(got.ChangedFiles, " M README.md") {
 		t.Fatalf("changed files = %v, want modified README.md", got.ChangedFiles)
+	}
+	if !strings.Contains(got.DiffStats, "1 file changed") {
+		t.Fatalf("diff stats = %q, want file change count", got.DiffStats)
 	}
 }
 

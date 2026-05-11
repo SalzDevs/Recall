@@ -46,6 +46,7 @@ type recallSession struct {
 type recallStatus struct {
 	Session      recallSession
 	ChangedFiles []string
+	DiffStats    string
 }
 
 func findGitRoot(startDir string) (string, error) {
@@ -122,6 +123,22 @@ func getChangedFiles(gitRoot string) ([]string, error) {
 	}
 
 	return changedFiles, nil
+}
+
+func getDiffStats(gitRoot, baseCommit string) (string, error) {
+	if gitRoot == "" {
+		return "", fmt.Errorf("git root is required")
+	}
+	if baseCommit == "" {
+		return "", fmt.Errorf("base commit is required")
+	}
+
+	output, err := exec.Command("git", "-C", gitRoot, "diff", "--shortstat", baseCommit).Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to read diff stats")
+	}
+
+	return strings.TrimSpace(string(output)), nil
 }
 
 func ensureRecallDir(gitRoot string) (string, error) {
@@ -449,7 +466,12 @@ func runStatus() (recallStatus, error) {
 		return recallStatus{}, err
 	}
 
-	return recallStatus{Session: session, ChangedFiles: changedFiles}, nil
+	diffStats, err := getDiffStats(gitRoot, session.BaseCommit)
+	if err != nil {
+		return recallStatus{}, err
+	}
+
+	return recallStatus{Session: session, ChangedFiles: changedFiles, DiffStats: diffStats}, nil
 }
 
 func printUsage(w io.Writer) {
@@ -535,6 +557,13 @@ func main() {
 			for _, file := range status.ChangedFiles {
 				fmt.Printf("  %s\n", file)
 			}
+		}
+		fmt.Println()
+		fmt.Println("Diff:")
+		if status.DiffStats == "" {
+			fmt.Println("  no tracked changes")
+		} else {
+			fmt.Printf("  %s\n", status.DiffStats)
 		}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", args[0])
