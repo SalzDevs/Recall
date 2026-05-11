@@ -153,6 +153,65 @@ func getDiffStats(gitRoot, baseCommit string) (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
+func hasRecallIgnoreEntry(data []byte) bool {
+	text := strings.ReplaceAll(string(data), "\r\n", "\n")
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == ".recall" || line == ".recall/" {
+			return true
+		}
+	}
+
+	return false
+}
+
+func ensureRecallIgnored(gitRoot string) (string, error) {
+	if gitRoot == "" {
+		return "", fmt.Errorf("git root is required")
+	}
+
+	gitignorePath := filepath.Join(gitRoot, ".gitignore")
+	info, err := os.Stat(gitignorePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if err := os.WriteFile(gitignorePath, []byte(".recall/\n"), 0o644); err != nil {
+				return "", fmt.Errorf("failed to create .gitignore: %w", err)
+			}
+			return gitignorePath, nil
+		}
+
+		return "", fmt.Errorf("failed to inspect .gitignore: %w", err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf(".gitignore exists but is a directory")
+	}
+
+	data, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read .gitignore: %w", err)
+	}
+	if hasRecallIgnoreEntry(data) {
+		return gitignorePath, nil
+	}
+
+	entry := ".recall/\n"
+	if len(data) > 0 && !strings.HasSuffix(string(data), "\n") {
+		entry = "\n" + entry
+	}
+
+	file, err := os.OpenFile(gitignorePath, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return "", fmt.Errorf("failed to open .gitignore: %w", err)
+	}
+	defer file.Close()
+
+	if _, err := file.WriteString(entry); err != nil {
+		return "", fmt.Errorf("failed to update .gitignore: %w", err)
+	}
+
+	return gitignorePath, nil
+}
+
 func ensureRecallDir(gitRoot string) (string, error) {
 	if gitRoot == "" {
 		return "", fmt.Errorf("git root is required")
@@ -633,6 +692,10 @@ func runInit() (string, string, error) {
 	gitRoot, err := findGitRoot(currentDir)
 	if err != nil {
 		return "", "", fmt.Errorf("Recall requires a Git repository. Run `git init` first")
+	}
+
+	if _, err := ensureRecallIgnored(gitRoot); err != nil {
+		return "", "", err
 	}
 
 	recallDir, err := ensureRecallDir(gitRoot)

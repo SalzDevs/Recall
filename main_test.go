@@ -142,6 +142,78 @@ func TestGetDiffStatsReturnsEmptyStringForNoTrackedChanges(t *testing.T) {
 	}
 }
 
+func TestEnsureRecallIgnoredCreatesGitignore(t *testing.T) {
+	repoRoot := t.TempDir()
+
+	gitignorePath, err := ensureRecallIgnored(repoRoot)
+	if err != nil {
+		t.Fatalf("ensureRecallIgnored returned error: %v", err)
+	}
+	if gitignorePath != filepath.Join(repoRoot, ".gitignore") {
+		t.Fatalf("gitignorePath = %q, want .gitignore path", gitignorePath)
+	}
+
+	data, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatalf("failed to read .gitignore: %v", err)
+	}
+	if string(data) != ".recall/\n" {
+		t.Fatalf(".gitignore = %q, want .recall entry", string(data))
+	}
+}
+
+func TestEnsureRecallIgnoredAppendsEntry(t *testing.T) {
+	repoRoot := t.TempDir()
+	gitignorePath := filepath.Join(repoRoot, ".gitignore")
+	if err := os.WriteFile(gitignorePath, []byte("dist/"), 0o644); err != nil {
+		t.Fatalf("failed to write .gitignore: %v", err)
+	}
+
+	if _, err := ensureRecallIgnored(repoRoot); err != nil {
+		t.Fatalf("ensureRecallIgnored returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatalf("failed to read .gitignore: %v", err)
+	}
+	if string(data) != "dist/\n.recall/\n" {
+		t.Fatalf(".gitignore = %q, want appended .recall entry", string(data))
+	}
+}
+
+func TestEnsureRecallIgnoredDoesNotDuplicateEntry(t *testing.T) {
+	repoRoot := t.TempDir()
+	gitignorePath := filepath.Join(repoRoot, ".gitignore")
+	original := []byte("dist/\n.recall/\n")
+	if err := os.WriteFile(gitignorePath, original, 0o644); err != nil {
+		t.Fatalf("failed to write .gitignore: %v", err)
+	}
+
+	if _, err := ensureRecallIgnored(repoRoot); err != nil {
+		t.Fatalf("ensureRecallIgnored returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatalf("failed to read .gitignore: %v", err)
+	}
+	if string(data) != string(original) {
+		t.Fatalf(".gitignore = %q, want unchanged %q", string(data), string(original))
+	}
+}
+
+func TestEnsureRecallIgnoredRejectsDirectory(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repoRoot, ".gitignore"), 0o755); err != nil {
+		t.Fatalf("failed to create .gitignore directory: %v", err)
+	}
+
+	if gitignorePath, err := ensureRecallIgnored(repoRoot); err == nil {
+		t.Fatalf("ensureRecallIgnored() = %q, nil; want error", gitignorePath)
+	}
+}
+
 func TestEnsureRecallDirCreatesDirectory(t *testing.T) {
 	repoRoot := t.TempDir()
 	recallDir := filepath.Join(repoRoot, ".recall")
@@ -766,6 +838,14 @@ func TestRunInitInitializesRecallInGitRoot(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected %s to exist: %v", path, err)
 		}
+	}
+
+	gitignoreData, err := os.ReadFile(filepath.Join(repoRoot, ".gitignore"))
+	if err != nil {
+		t.Fatalf("failed to read .gitignore: %v", err)
+	}
+	if !hasRecallIgnoreEntry(gitignoreData) {
+		t.Fatalf(".gitignore missing .recall entry: %q", string(gitignoreData))
 	}
 }
 
