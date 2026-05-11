@@ -629,6 +629,45 @@ func TestWriteHandoffRejectsMissingHandoffDir(t *testing.T) {
 	}
 }
 
+func TestDiffLineChangeCountParsesInsertionsAndDeletions(t *testing.T) {
+	got := diffLineChangeCount("2 files changed, 120 insertions(+), 18 deletions(-)")
+	if got != 138 {
+		t.Fatalf("diffLineChangeCount() = %d, want 138", got)
+	}
+}
+
+func TestBuildReviewReturnsLowRiskChecklist(t *testing.T) {
+	status := recallStatus{
+		Session:      recallSession{Goal: "build auth flow"},
+		ChangedFiles: []string{" M README.md"},
+		DiffStats:    "1 file changed, 5 insertions(+)",
+	}
+
+	review := buildReview(status)
+	if review.RiskLevel != "low" {
+		t.Fatalf("risk level = %q, want low", review.RiskLevel)
+	}
+	if len(review.Checklist) == 0 {
+		t.Fatalf("checklist is empty")
+	}
+}
+
+func TestBuildReviewReturnsHighRiskChecklist(t *testing.T) {
+	status := recallStatus{
+		Session:      recallSession{Goal: "build auth flow"},
+		ChangedFiles: []string{" M README.md"},
+		DiffStats:    "4 files changed, 500 insertions(+), 1 deletion(-)",
+	}
+
+	review := buildReview(status)
+	if review.RiskLevel != "high" {
+		t.Fatalf("risk level = %q, want high", review.RiskLevel)
+	}
+	if !strings.Contains(review.Checklist[0], "context-loss risk is high") {
+		t.Fatalf("first checklist item = %q, want high-risk warning", review.Checklist[0])
+	}
+}
+
 func TestWriteDefaultConfigCreatesConfig(t *testing.T) {
 	recallDir := t.TempDir()
 	configPath := filepath.Join(recallDir, configFileName)
@@ -1004,6 +1043,49 @@ func TestRunStopReturnsNoActiveSession(t *testing.T) {
 
 	if session, archivePath, err := runStop(); !errors.Is(err, errNoActiveSession) {
 		t.Fatalf("runStop() = %+v, %q, %v; want errNoActiveSession", session, archivePath, err)
+	}
+}
+
+func TestRunReviewReturnsChecklist(t *testing.T) {
+	repoRoot := initTestRepo(t)
+	commitTestFile(t, repoRoot)
+	restoreWorkingDir := chdir(t, repoRoot)
+	defer restoreWorkingDir()
+
+	if _, _, err := runInit(); err != nil {
+		t.Fatalf("runInit returned error: %v", err)
+	}
+	if _, _, err := runStart("build auth flow"); err != nil {
+		t.Fatalf("runStart returned error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "README.md"), []byte("# Changed\n"), 0o644); err != nil {
+		t.Fatalf("failed to modify tracked file: %v", err)
+	}
+
+	review, err := runReview()
+	if err != nil {
+		t.Fatalf("runReview returned error: %v", err)
+	}
+	if review.Status.Session.Goal != "build auth flow" {
+		t.Fatalf("goal = %q, want build auth flow", review.Status.Session.Goal)
+	}
+	if len(review.Checklist) == 0 {
+		t.Fatalf("checklist is empty")
+	}
+}
+
+func TestRunReviewReturnsNoActiveSession(t *testing.T) {
+	repoRoot := initTestRepo(t)
+	commitTestFile(t, repoRoot)
+	restoreWorkingDir := chdir(t, repoRoot)
+	defer restoreWorkingDir()
+
+	if _, _, err := runInit(); err != nil {
+		t.Fatalf("runInit returned error: %v", err)
+	}
+
+	if review, err := runReview(); !errors.Is(err, errNoActiveSession) {
+		t.Fatalf("runReview() = %+v, %v; want errNoActiveSession", review, err)
 	}
 }
 

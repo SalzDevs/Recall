@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -23,6 +25,7 @@ const (
 var (
 	errNoActiveSession = errors.New("no active Recall session")
 	recallSubdirs      = []string{"sessions", "checkpoints", "handoffs"}
+	diffChangePattern  = regexp.MustCompile(`(\d+) (insertion|deletion)`)
 )
 
 type recallConfig struct {
@@ -50,6 +53,12 @@ type recallStatus struct {
 	Session      recallSession
 	ChangedFiles []string
 	DiffStats    string
+}
+
+type recallReview struct {
+	Status    recallStatus
+	RiskLevel string
+	Checklist []string
 }
 
 func findGitRoot(startDir string) (string, error) {
@@ -461,6 +470,57 @@ func writeCheckpoint(recallDir string, status recallStatus, message string) (str
 	return checkpointPath, nil
 }
 
+func diffLineChangeCount(diffStats string) int {
+	matches := diffChangePattern.FindAllStringSubmatch(diffStats, -1)
+	count := 0
+	for _, match := range matches {
+		if len(match) < 2 {
+			continue
+		}
+
+		value, err := strconv.Atoi(match[1])
+		if err != nil {
+			continue
+		}
+		count += value
+	}
+
+	return count
+}
+
+func contextRiskLevel(status recallStatus) string {
+	changedFileCount := len(status.ChangedFiles)
+	lineChangeCount := diffLineChangeCount(status.DiffStats)
+
+	switch {
+	case changedFileCount >= 10 || lineChangeCount >= 500:
+		return "high"
+	case changedFileCount >= 5 || lineChangeCount >= 100:
+		return "medium"
+	default:
+		return "low"
+	}
+}
+
+func buildReview(status recallStatus) recallReview {
+	checklist := []string{
+		"Confirm the active session goal still matches the work in progress.",
+		"Review each changed file before continuing.",
+		"Inspect the diff from the base commit.",
+		"Run the relevant tests or build commands.",
+		"Create a checkpoint or handoff before switching tasks.",
+	}
+
+	riskLevel := contextRiskLevel(status)
+	if riskLevel == "high" {
+		checklist = append([]string{
+			"Pause before making more agent-driven changes; context-loss risk is high.",
+		}, checklist...)
+	}
+
+	return recallReview{Status: status, RiskLevel: riskLevel, Checklist: checklist}
+}
+
 func writeHandoff(recallDir string, status recallStatus) (string, error) {
 	if recallDir == "" {
 		return "", fmt.Errorf("recall directory is required")
@@ -732,6 +792,15 @@ func runStop() (recallSession, string, error) {
 	return stopActiveSession(recallDir)
 }
 
+func runReview() (recallReview, error) {
+	_, status, err := currentRecallContext()
+	if err != nil {
+		return recallReview{}, err
+	}
+
+	return buildReview(status), nil
+}
+
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  recall init")
@@ -740,6 +809,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  recall checkpoint <message>")
 	fmt.Fprintln(w, "  recall handoff")
 	fmt.Fprintln(w, "  recall stop")
+	fmt.Fprintln(w, "  recall review")
 }
 
 func main() {
@@ -885,6 +955,31 @@ func main() {
 
 		fmt.Printf("Stopped Recall session: %s\n", session.Goal)
 		fmt.Printf("Archived: %s\n", archivePath)
+	case "review":
+		if len(args) > 1 {
+			fmt.Fprintf(os.Stderr, "review does not accept arguments\n\n")
+			printUsage(os.Stderr)
+			os.Exit(1)
+		}
+
+		review, err := runReview()
+		if err != nil {
+			if errors.Is(err, errNoActiveSession) {
+				fmt.Fprintf(os.Stderr, "no active Recall session to review\n")
+				os.Exit(1)
+			}
+
+			fmt.Fprintf(os.Stderr, "failed to create review checklist: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Review for: %s\n", review.Status.Session.Goal)
+		fmt.Printf("Context risk: %s\n", review.RiskLevel)
+		fmt.Println()
+		fmt.Println("Checklist:")
+		for _, item := range review.Checklist {
+			fmt.Printf("  - %s\n", item)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", args[0])
 		printUsage(os.Stderr)
