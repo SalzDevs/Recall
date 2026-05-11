@@ -331,6 +331,29 @@ func readActiveSession(recallDir string) (recallSession, error) {
 	return session, nil
 }
 
+func ensureSubdir(recallDir, name string) (string, error) {
+	if recallDir == "" {
+		return "", fmt.Errorf("recall directory is required")
+	}
+	if name == "" {
+		return "", fmt.Errorf("subdirectory name is required")
+	}
+
+	path := filepath.Join(recallDir, name)
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("%s directory not found", name)
+		}
+		return "", fmt.Errorf("failed to inspect %s directory: %w", name, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%s path exists but is not a directory", name)
+	}
+
+	return path, nil
+}
+
 func writeCheckpoint(recallDir string, status recallStatus, message string) (string, error) {
 	if recallDir == "" {
 		return "", fmt.Errorf("recall directory is required")
@@ -341,16 +364,9 @@ func writeCheckpoint(recallDir string, status recallStatus, message string) (str
 		return "", fmt.Errorf("checkpoint message is required")
 	}
 
-	checkpointsDir := filepath.Join(recallDir, "checkpoints")
-	info, err := os.Stat(checkpointsDir)
+	checkpointsDir, err := ensureSubdir(recallDir, "checkpoints")
 	if err != nil {
-		if os.IsNotExist(err) {
-			return "", fmt.Errorf("checkpoints directory not found")
-		}
-		return "", fmt.Errorf("failed to inspect checkpoints directory: %w", err)
-	}
-	if !info.IsDir() {
-		return "", fmt.Errorf("checkpoints path exists but is not a directory")
+		return "", err
 	}
 
 	now := time.Now().UTC()
@@ -395,6 +411,62 @@ func writeCheckpoint(recallDir string, status recallStatus, message string) (str
 	}
 
 	return checkpointPath, nil
+}
+
+func writeHandoff(recallDir string, status recallStatus) (string, error) {
+	if recallDir == "" {
+		return "", fmt.Errorf("recall directory is required")
+	}
+
+	handoffsDir, err := ensureSubdir(recallDir, "handoffs")
+	if err != nil {
+		return "", err
+	}
+
+	now := time.Now().UTC()
+	handoffPath := filepath.Join(handoffsDir, now.Format(checkpointTimeFormat)+"Z.md")
+
+	var builder strings.Builder
+	builder.WriteString("# Recall Agent Handoff\n\n")
+	builder.WriteString(fmt.Sprintf("Generated: %s\n\n", now.Format(time.RFC3339)))
+	builder.WriteString("## Current session\n\n")
+	builder.WriteString(fmt.Sprintf("Goal: %s\n", status.Session.Goal))
+	builder.WriteString(fmt.Sprintf("Started: %s\n", status.Session.StartedAt))
+	builder.WriteString(fmt.Sprintf("Status: %s\n\n", status.Session.Status))
+	builder.WriteString("## Git context\n\n")
+	builder.WriteString(fmt.Sprintf("Branch: %s\n", status.Session.Branch))
+	builder.WriteString(fmt.Sprintf("Base commit: %s\n\n", status.Session.BaseCommit))
+	builder.WriteString("## Changed files\n\n")
+	if len(status.ChangedFiles) == 0 {
+		builder.WriteString("none\n\n")
+	} else {
+		for _, file := range status.ChangedFiles {
+			builder.WriteString(fmt.Sprintf("- %s\n", file))
+		}
+		builder.WriteString("\n")
+	}
+	builder.WriteString("## Diff stats\n\n")
+	if status.DiffStats == "" {
+		builder.WriteString("no tracked changes\n\n")
+	} else {
+		builder.WriteString(status.DiffStats)
+		builder.WriteString("\n\n")
+	}
+	builder.WriteString("## Suggested next-agent prompt\n\n")
+	builder.WriteString(fmt.Sprintf("Continue this Recall session: %s\n\n", status.Session.Goal))
+	builder.WriteString("Before changing code, review the changed files and diff stats above. Preserve the user's context and explain any risky changes.\n")
+
+	file, err := os.OpenFile(handoffPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return "", fmt.Errorf("failed to create handoff: %w", err)
+	}
+	defer file.Close()
+
+	if _, err := file.WriteString(builder.String()); err != nil {
+		return "", fmt.Errorf("failed to write handoff: %w", err)
+	}
+
+	return handoffPath, nil
 }
 
 func writeDefaultConfig(recallDir, projectName string) (string, error) {
@@ -541,39 +613,56 @@ func runStatus() (recallStatus, error) {
 	return recallStatus{Session: session, ChangedFiles: changedFiles, DiffStats: diffStats}, nil
 }
 
-func runCheckpoint(message string) (string, error) {
+func currentRecallContext() (string, recallStatus, error) {
 	currentDir, err := os.Getwd()
 	if err != nil {
-		return "", fmt.Errorf("failed to get current directory: %w", err)
+		return "", recallStatus{}, fmt.Errorf("failed to get current directory: %w", err)
 	}
 
 	gitRoot, err := findGitRoot(currentDir)
 	if err != nil {
-		return "", fmt.Errorf("Recall requires a Git repository. Run `git init` first")
+		return "", recallStatus{}, fmt.Errorf("Recall requires a Git repository. Run `git init` first")
 	}
 
 	recallDir, err := getRecallDir(gitRoot)
 	if err != nil {
-		return "", err
+		return "", recallStatus{}, err
 	}
 
 	session, err := readActiveSession(recallDir)
 	if err != nil {
-		return "", err
+		return "", recallStatus{}, err
 	}
 
 	changedFiles, err := getChangedFiles(gitRoot)
 	if err != nil {
-		return "", err
+		return "", recallStatus{}, err
 	}
 
 	diffStats, err := getDiffStats(gitRoot, session.BaseCommit)
 	if err != nil {
+		return "", recallStatus{}, err
+	}
+
+	return recallDir, recallStatus{Session: session, ChangedFiles: changedFiles, DiffStats: diffStats}, nil
+}
+
+func runCheckpoint(message string) (string, error) {
+	recallDir, status, err := currentRecallContext()
+	if err != nil {
 		return "", err
 	}
 
-	status := recallStatus{Session: session, ChangedFiles: changedFiles, DiffStats: diffStats}
 	return writeCheckpoint(recallDir, status, message)
+}
+
+func runHandoff() (string, error) {
+	recallDir, status, err := currentRecallContext()
+	if err != nil {
+		return "", err
+	}
+
+	return writeHandoff(recallDir, status)
 }
 
 func printUsage(w io.Writer) {
@@ -582,6 +671,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  recall start <goal>")
 	fmt.Fprintln(w, "  recall status")
 	fmt.Fprintln(w, "  recall checkpoint <message>")
+	fmt.Fprintln(w, "  recall handoff")
 }
 
 func main() {
@@ -688,6 +778,25 @@ func main() {
 		}
 
 		fmt.Printf("Created checkpoint: %s\n", checkpointPath)
+	case "handoff":
+		if len(args) > 1 {
+			fmt.Fprintf(os.Stderr, "handoff does not accept arguments\n\n")
+			printUsage(os.Stderr)
+			os.Exit(1)
+		}
+
+		handoffPath, err := runHandoff()
+		if err != nil {
+			if errors.Is(err, errNoActiveSession) {
+				fmt.Fprintf(os.Stderr, "no active Recall session. Start one with `recall start \"describe your goal\"`\n")
+				os.Exit(1)
+			}
+
+			fmt.Fprintf(os.Stderr, "failed to create handoff: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Created handoff: %s\n", handoffPath)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", args[0])
 		printUsage(os.Stderr)

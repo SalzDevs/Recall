@@ -511,6 +511,60 @@ func TestWriteCheckpointRejectsMissingCheckpointDir(t *testing.T) {
 	}
 }
 
+func TestWriteHandoffCreatesMarkdown(t *testing.T) {
+	recallDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(recallDir, "handoffs"), 0o755); err != nil {
+		t.Fatalf("failed to create handoffs directory: %v", err)
+	}
+
+	status := recallStatus{
+		Session: recallSession{
+			ID:         "20260511T120000Z",
+			Goal:       "build auth flow",
+			StartedAt:  "2026-05-11T12:00:00Z",
+			Branch:     "main",
+			BaseCommit: "abc123",
+			Status:     sessionStatusActive,
+		},
+		ChangedFiles: []string{" M README.md"},
+		DiffStats:    "1 file changed, 1 insertion(+)",
+	}
+
+	handoffPath, err := writeHandoff(recallDir, status)
+	if err != nil {
+		t.Fatalf("writeHandoff returned error: %v", err)
+	}
+	if filepath.Dir(handoffPath) != filepath.Join(recallDir, "handoffs") {
+		t.Fatalf("handoff path = %q, want file in handoffs directory", handoffPath)
+	}
+
+	data, err := os.ReadFile(handoffPath)
+	if err != nil {
+		t.Fatalf("failed to read handoff: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{
+		"# Recall Agent Handoff",
+		"Goal: build auth flow",
+		"Branch: main",
+		"-  M README.md",
+		"1 file changed, 1 insertion(+)",
+		"Continue this Recall session: build auth flow",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("handoff content missing %q:\n%s", want, content)
+		}
+	}
+}
+
+func TestWriteHandoffRejectsMissingHandoffDir(t *testing.T) {
+	recallDir := t.TempDir()
+
+	if handoffPath, err := writeHandoff(recallDir, recallStatus{}); err == nil {
+		t.Fatalf("writeHandoff() = %q, nil; want error", handoffPath)
+	}
+}
+
 func TestWriteDefaultConfigCreatesConfig(t *testing.T) {
 	recallDir := t.TempDir()
 	configPath := filepath.Join(recallDir, configFileName)
@@ -786,6 +840,58 @@ func TestRunCheckpointReturnsNoActiveSession(t *testing.T) {
 
 	if checkpointPath, err := runCheckpoint("message"); !errors.Is(err, errNoActiveSession) {
 		t.Fatalf("runCheckpoint() = %q, %v; want errNoActiveSession", checkpointPath, err)
+	}
+}
+
+func TestRunHandoffCreatesHandoff(t *testing.T) {
+	repoRoot := initTestRepo(t)
+	commitTestFile(t, repoRoot)
+	restoreWorkingDir := chdir(t, repoRoot)
+	defer restoreWorkingDir()
+
+	if _, _, err := runInit(); err != nil {
+		t.Fatalf("runInit returned error: %v", err)
+	}
+	if _, _, err := runStart("build auth flow"); err != nil {
+		t.Fatalf("runStart returned error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "README.md"), []byte("# Changed\n"), 0o644); err != nil {
+		t.Fatalf("failed to modify tracked file: %v", err)
+	}
+
+	handoffPath, err := runHandoff()
+	if err != nil {
+		t.Fatalf("runHandoff returned error: %v", err)
+	}
+	if filepath.Dir(handoffPath) != filepath.Join(repoRoot, ".recall", "handoffs") {
+		t.Fatalf("handoff path = %q, want file in handoffs directory", handoffPath)
+	}
+
+	data, err := os.ReadFile(handoffPath)
+	if err != nil {
+		t.Fatalf("failed to read handoff: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "Continue this Recall session: build auth flow") {
+		t.Fatalf("handoff content missing next-agent prompt:\n%s", content)
+	}
+	if !strings.Contains(content, "-  M README.md") {
+		t.Fatalf("handoff content missing changed file:\n%s", content)
+	}
+}
+
+func TestRunHandoffReturnsNoActiveSession(t *testing.T) {
+	repoRoot := initTestRepo(t)
+	commitTestFile(t, repoRoot)
+	restoreWorkingDir := chdir(t, repoRoot)
+	defer restoreWorkingDir()
+
+	if _, _, err := runInit(); err != nil {
+		t.Fatalf("runInit returned error: %v", err)
+	}
+
+	if handoffPath, err := runHandoff(); !errors.Is(err, errNoActiveSession) {
+		t.Fatalf("runHandoff() = %q, %v; want errNoActiveSession", handoffPath, err)
 	}
 }
 
